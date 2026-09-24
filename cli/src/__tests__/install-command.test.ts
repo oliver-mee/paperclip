@@ -116,6 +116,8 @@ describe("managed install commands", () => {
           { dir: "packages/db", name: "@paperclipai/db", packageJson: { name: "@paperclipai/db", version: "0.3.1", dependencies: { "@paperclipai/shared": "workspace:*" }, bundleDependencies: ["embedded-postgres"] } },
           { dir: "server", name: "@paperclipai/server", packageJson: { name: "@paperclipai/server", version: "0.3.1", dependencies: { "@paperclipai/db": "workspace:*" } } },
         ];
+        fs.mkdirSync(path.join(checkout, "skills", "paperclip"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "skills", "paperclip", "SKILL.md"), "skill");
         fs.mkdirSync(path.join(checkout, "cli"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
@@ -131,6 +133,9 @@ describe("managed install commands", () => {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packageDir = args[args.indexOf("--dir") + 1];
           const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
+          if (packageDir === "server" && !fs.existsSync(path.join(_options?.cwd ?? "", "server", "skills", "paperclip", "SKILL.md"))) {
+            throw new Error("server/skills was not staged before packing");
+          }
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
         }
         return { stdout: "", stderr: "" };
@@ -163,11 +168,11 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args[1] === "install")).toHaveLength(1);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(2);
     expect(runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"))).toHaveLength(1);
-    const prepackIndex = runCommand.mock.calls.findIndex(([command, args]) => command === "corepack" && args.join(" ") === "pnpm --dir packages/db run --if-present prepack");
+    const uiDistIndex = runCommand.mock.calls.findIndex(([command, args]) => command === "bash" && args[0] === "scripts/prepare-server-ui-dist.sh");
     const bundleIndex = runCommand.mock.calls.findIndex(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"));
-    expect(prepackIndex).toBeGreaterThan(-1);
-    expect(prepackIndex).toBeLessThan(bundleIndex);
-    expect(runCommand.mock.calls[prepackIndex]?.[2]?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST).toBe("1");
+    expect(uiDistIndex).toBeGreaterThan(-1);
+    expect(uiDistIndex).toBeLessThan(bundleIndex);
+    expect(runCommand.mock.calls[uiDistIndex]?.[2]?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST).toBe("1");
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
