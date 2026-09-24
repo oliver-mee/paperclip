@@ -173,6 +173,10 @@ describe("managed install commands", () => {
     expect(uiDistIndex).toBeGreaterThan(-1);
     expect(uiDistIndex).toBeLessThan(bundleIndex);
     expect(runCommand.mock.calls[uiDistIndex]?.[2]?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST).toBe("1");
+    const setVersionIndex = runCommand.mock.calls.findIndex(([command, args]) => command === process.execPath && args[0]?.endsWith("release-package-map.mjs") && args[1] === "set-version" && args[2] === "0.3.1");
+    const firstPackIndex = runCommand.mock.calls.findIndex(([command, args]) => (command === "corepack" && args.includes("pack")) || (command === "npm" && args[0] === "pack"));
+    expect(setVersionIndex).toBeGreaterThan(-1);
+    expect(setVersionIndex).toBeLessThan(Math.min(bundleIndex, firstPackIndex));
     const stagedPackCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "pack" && args[1]?.includes("workspace-package-"));
     expect(stagedPackCall?.[1]).toContain("--ignore-scripts");
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
