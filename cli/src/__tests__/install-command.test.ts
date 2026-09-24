@@ -163,6 +163,11 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args[1] === "install")).toHaveLength(1);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(2);
     expect(runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"))).toHaveLength(1);
+    const prepackIndex = runCommand.mock.calls.findIndex(([command, args]) => command === "corepack" && args.join(" ") === "pnpm --dir packages/db run --if-present prepack");
+    const bundleIndex = runCommand.mock.calls.findIndex(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"));
+    expect(prepackIndex).toBeGreaterThan(-1);
+    expect(prepackIndex).toBeLessThan(bundleIndex);
+    expect(runCommand.mock.calls[prepackIndex]?.[2]?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST).toBe("1");
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
@@ -178,7 +183,7 @@ describe("managed install commands", () => {
       file === "corepack" ||
       (file === "npm" && args[0] === "pack") ||
       (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")));
-    expect(buildCalls).toHaveLength(9);
+    expect(buildCalls).toHaveLength(10);
     for (const call of buildCalls) {
       const env = call[2]?.env;
       expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();

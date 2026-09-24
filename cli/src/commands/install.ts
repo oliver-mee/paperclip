@@ -286,6 +286,9 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       const bundledDependencies = packageJson.bundleDependencies ?? packageJson.bundledDependencies ?? [];
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
+        // prepare-bundled-package copies `files` directly, so pnpm pack's prepack never runs; run it
+        // here or artifacts it produces (server/ui-dist) are missing from the staged package.
+        await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "run", "--if-present", "prepack"], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
         await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
