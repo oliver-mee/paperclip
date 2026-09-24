@@ -173,6 +173,8 @@ describe("managed install commands", () => {
     expect(uiDistIndex).toBeGreaterThan(-1);
     expect(uiDistIndex).toBeLessThan(bundleIndex);
     expect(runCommand.mock.calls[uiDistIndex]?.[2]?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST).toBe("1");
+    const stagedPackCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "pack" && args[1]?.includes("workspace-package-"));
+    expect(stagedPackCall?.[1]).toContain("--ignore-scripts");
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
