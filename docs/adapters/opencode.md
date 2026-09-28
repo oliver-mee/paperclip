@@ -27,8 +27,12 @@ Official installers as of 2026-09: `https://opencode.ai/install` currently ships
 the v1 line (upstream GitHub releases are still v1.x tags), while
 `https://opencode.ai/v2/install` installs v2. Both lines install the same
 `opencode` binary name. Managed sandbox targets bootstrap with the official v1
-installer, so run v2 on a remote target by baking `@opencode/cli` into the
-target and pointing `adapterConfig.command` at that binary.
+installer. Note that remote execution targets currently run the v1 CLI
+contract: the version probe is local-only, so remote runs keep the legacy v1
+arguments regardless of what is installed on the target (see
+[Limitations](#limitations)). v2 is supported on local execution targets only —
+baking `@opencode/cli` into a remote target and pointing
+`adapterConfig.command` at it will not work until a remote-aware probe exists.
 
 ## Supported OpenCode Lines
 
@@ -98,9 +102,15 @@ second installed line.
   `~/.claude/skills` as a lower-precedence compat source). When the line is
   `unknown`, both homes are linked so a run works whichever line is installed.
 - **State isolation.** v2 stores state in SQLite (defaulting to
-  `~/.local/share/opencode/opencode.db`). The adapter pins `OPENCODE_DB` to the
-  run's isolated managed home so a v2 run can never fall back to the operator's
-  global database. `OPENCODE_DISABLE_PROJECT_CONFIG=true` is set on both lines
+  `~/.local/share/opencode/opencode.db`). When the isolated runtime config home
+  is active (the default `dangerouslySkipPermissions` path), the adapter pins
+  `OPENCODE_DB` into that run-scoped home so the run does not fall back to the
+  operator's global database. Runs without that isolation — e.g.
+  `dangerouslySkipPermissions: false`, which leaves the caller env untouched —
+  and remote targets (which strip the host-only `OPENCODE_DB`) resolve their
+  state by XDG defaults instead; managed remote credential runs re-pin
+  `OPENCODE_DB` inside the managed remote home.
+  `OPENCODE_DISABLE_PROJECT_CONFIG=true` is set on both lines
   so OpenCode never writes an `opencode.json` into the project working
   directory.
 

@@ -5,8 +5,12 @@
 //
 // Environment contract:
 //   FAKE_OPENCODE_MODE=v1|v2   selects the emulated CLI line (default v1).
-//   FAKE_OPENCODE_ARGS_FILE    `run` invocations append their argv here as one
-//                              JSON array per line.
+//   FAKE_OPENCODE_ARGS_FILE    `run` invocations append one JSON object per
+//                              line: {argv, stdinBytes, stdinPrefix} — argv is
+//                              the CLI args, stdinBytes/stdinPrefix record the
+//                              prompt delivered on stdin (byte count and the
+//                              first 64 bytes) so tests can prove prompt
+//                              delivery is stdin-based, not positional.
 //   FAKE_OPENCODE_REPLY        file whose contents are printed verbatim as the
 //                              canned JSONL stdout of a successful `run`.
 //
@@ -52,15 +56,23 @@ function writeStdout(text) {
 
 function consumeStdin() {
   // The adapter pipes the prompt into stdin; drain it to EOF before replying so
-  // the parent's write never races our exit.
+  // the parent's write never races our exit. The bytes are returned so the run
+  // capture can record how (and how much) prompt text arrived on stdin.
   return new Promise((resolve) => {
+    const chunks = [];
     let settled = false;
     const done = () => {
       if (settled) return;
       settled = true;
-      resolve();
+      const stdin = Buffer.concat(chunks);
+      resolve({
+        bytes: stdin.length,
+        prefix: stdin.subarray(0, 64).toString("utf8"),
+      });
     };
-    process.stdin.on("data", () => {});
+    process.stdin.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
     process.stdin.on("end", done);
     process.stdin.on("error", done);
     process.stdin.on("close", done);
@@ -89,8 +101,16 @@ function printModels() {
 }
 
 async function runPrompt() {
-  if (argsFile) appendFileSync(argsFile, `${JSON.stringify(argv)}\n`);
-  await consumeStdin();
+  // Drain stdin first: the capture records the prompt bytes delivered there,
+  // so the record must follow EOF (and a v2 --variant rejection below still
+  // records the invocation).
+  const stdin = await consumeStdin();
+  if (argsFile) {
+    appendFileSync(
+      argsFile,
+      `${JSON.stringify({ argv, stdinBytes: stdin.bytes, stdinPrefix: stdin.prefix })}\n`,
+    );
+  }
   if (mode === "v2" && argv.includes("--variant")) {
     writeStdout(V2_RUN_HELP_TEXT);
     process.exitCode = 2;

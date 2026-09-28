@@ -209,12 +209,22 @@ async function createFakeRunFixture(options: {
   };
 }
 
-async function readCapturedArgs(argsFile: string): Promise<string[][]> {
+interface CapturedRun {
+  argv: string[];
+  stdinBytes: number;
+  stdinPrefix: string;
+}
+
+async function readCapturedRuns(argsFile: string): Promise<CapturedRun[]> {
   const raw = await fs.readFile(argsFile, "utf8");
   return raw
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as string[]);
+    .map((line) => JSON.parse(line) as CapturedRun);
+}
+
+async function readCapturedArgs(argsFile: string): Promise<string[][]> {
+  return (await readCapturedRuns(argsFile)).map((run) => run.argv);
 }
 
 function expectFlagValue(args: string[], flag: string, value: string) {
@@ -344,9 +354,13 @@ describe("opencode-local driven by the fake opencode CLI", () => {
     const { result } = await runExecute(fixture);
 
     expect(result.exitCode).toBe(0);
-    const captured = await readCapturedArgs(fixture.argsFile);
+    const captured = await readCapturedRuns(fixture.argsFile);
     expect(captured).toHaveLength(1);
-    const args = captured[0];
+    // Plan §5.3: the prompt must reach the v1 CLI on stdin, not as a positional
+    // argv token — nonzero bytes whose prefix is the configured prompt.
+    expect(captured[0].stdinBytes).toBeGreaterThan(0);
+    expect(captured[0].stdinPrefix.startsWith("Run the task.")).toBe(true);
+    const args = captured[0].argv;
     expect(args.slice(0, 3)).toEqual(["run", "--format", "json"]);
     expectFlagValue(args, "--model", "p/m");
     expectFlagValue(args, "--variant", "high");

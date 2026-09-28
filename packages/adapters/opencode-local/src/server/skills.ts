@@ -45,10 +45,6 @@ function resolveOpenCodeHome(config: Record<string, unknown>): string {
   return configuredHome ? path.resolve(configuredHome) : os.homedir();
 }
 
-export function resolveOpenCodeSkillsHome(config: Record<string, unknown>) {
-  return path.join(resolveOpenCodeHome(config), ...OPENCODE_SKILLS_SUBPATH_V1);
-}
-
 // Resolve the skills home(s) a run should inject into for the detected OpenCode
 // version line. Omitted/`v1` keeps the historical single `~/.claude/skills`
 // target; `v2` targets the native global dir; `unknown` targets both so a run

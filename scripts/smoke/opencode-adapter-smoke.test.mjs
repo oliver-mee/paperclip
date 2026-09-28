@@ -149,9 +149,19 @@ for (const [lineName, cmdParts, expectedLine] of [
         console.log(`[smoke] note: ${lineName} run emitted no step_finish (usage=0)`);
       }
       if (parsers?.parseOpenCodeJsonl) {
-        const summary = parsers.parseOpenCodeJsonl(result.stdout);
-        assert.ok(summary.messages.length >= 1, `${lineName} adapter parser found no messages`);
-        assert.deepEqual(summary.errors, [], `${lineName} adapter parser surfaced errors for a clean run`);
+        // parseOpenCodeJsonl returns { sessionId, summary, usage, costUsd,
+        // errorMessage, toolErrors }: collected text is joined into `summary`
+        // (a string) and errors roll up into `errorMessage` (null when clean).
+        const parsed = parsers.parseOpenCodeJsonl(result.stdout);
+        assert.ok(
+          parsed.summary.includes("SMOKE-PONG"),
+          `${lineName} adapter parser summary missed SMOKE-PONG: ${JSON.stringify(parsed.summary.slice(0, 200))}`,
+        );
+        assert.equal(
+          parsed.errorMessage,
+          null,
+          `${lineName} adapter parser surfaced errors for a clean run: ${parsed.errorMessage}`,
+        );
       }
     },
   );
