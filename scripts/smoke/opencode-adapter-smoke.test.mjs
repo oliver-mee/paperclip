@@ -119,17 +119,20 @@ for (const [lineName, cmdParts, expectedLine] of [
   );
 
   test(
-    `opencode ${lineName}: run --format json delivers prompt text`,
+    `opencode ${lineName}: run --format json delivers prompt text via stdin`,
     { skip: SMOKE_ENABLED ? false : "set OPENCODE_SMOKE=1 to run live smoke" },
     async (t) => {
       const parsers = await loadAdapterParsers(t);
       const prompt = "Reply with exactly: SMOKE-PONG. Do not use any tools.";
-      // v2: positional message + --standalone (stdin piping is rejected by the
-      // v2 background-service path — probe-verified). v1: stdin, like execute.ts.
-      const result =
-        lineName === "v2"
-          ? run(cmdParts, ["run", "--format", "json", "--standalone", prompt])
-          : run(cmdParts, ["run", "--format", "json"], { input: prompt });
+      // The adapter delivers prompts via stdin on BOTH lines — that is its real
+      // execute() path (runAdapterExecutionTargetProcess pipes the prompt).
+      // v2 accepts stdin prompt delivery with --standalone (verified on
+      // 2.0.18; without --standalone the shared background service cancels it).
+      const result = run(
+        cmdParts,
+        ["run", "--format", "json", ...(lineName === "v2" ? ["--standalone"] : [])],
+        { input: prompt },
+      );
       evidence(`${lineName} run`, result);
       if (skipIfUnmet(t, result, `${lineName} run`)) return;
       assert.equal(result.status, 0, `${lineName} run failed: ${result.stderr || result.stdout}`);

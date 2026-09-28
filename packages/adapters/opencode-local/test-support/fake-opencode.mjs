@@ -6,11 +6,15 @@
 // Environment contract:
 //   FAKE_OPENCODE_MODE=v1|v2   selects the emulated CLI line (default v1).
 //   FAKE_OPENCODE_ARGS_FILE    `run` invocations append one JSON object per
-//                              line: {argv, stdinBytes, stdinPrefix} — argv is
-//                              the CLI args, stdinBytes/stdinPrefix record the
-//                              prompt delivered on stdin (byte count and the
-//                              first 64 bytes) so tests can prove prompt
-//                              delivery is stdin-based, not positional.
+//                              line: {argv, stdinBytes, stdinPrefix,
+//                              xdgConfigHome} — argv is the CLI args,
+//                              stdinBytes/stdinPrefix record the prompt
+//                              delivered on stdin (byte count and the first 64
+//                              bytes) so tests can prove prompt delivery is
+//                              stdin-based, not positional, and xdgConfigHome
+//                              records the run's XDG_CONFIG_HOME so tests can
+//                              assert skill injection targeted the config home
+//                              the run actually sees.
 //   FAKE_OPENCODE_REPLY        file whose contents are printed verbatim as the
 //                              canned JSONL stdout of a successful `run`.
 //
@@ -108,7 +112,12 @@ async function runPrompt() {
   if (argsFile) {
     appendFileSync(
       argsFile,
-      `${JSON.stringify({ argv, stdinBytes: stdin.bytes, stdinPrefix: stdin.prefix })}\n`,
+      `${JSON.stringify({
+        argv,
+        stdinBytes: stdin.bytes,
+        stdinPrefix: stdin.prefix,
+        xdgConfigHome: process.env.XDG_CONFIG_HOME ?? null,
+      })}\n`,
     );
   }
   if (mode === "v2" && argv.includes("--variant")) {

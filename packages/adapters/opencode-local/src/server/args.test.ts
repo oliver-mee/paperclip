@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { buildRunArgs } from "./args.js";
+import { buildRunArgs, resolveRunAutoApprove } from "./args.js";
+
+describe("resolveRunAutoApprove", () => {
+  it("auto-approves when both opt-outs are unset (defaults)", () => {
+    expect(resolveRunAutoApprove({})).toBe(true);
+    expect(resolveRunAutoApprove({ autoApprove: true, dangerouslySkipPermissions: true })).toBe(true);
+  });
+
+  it("suppresses --auto when dangerouslySkipPermissions is explicitly false", () => {
+    expect(resolveRunAutoApprove({ dangerouslySkipPermissions: false })).toBe(false);
+    expect(resolveRunAutoApprove({ autoApprove: true, dangerouslySkipPermissions: false })).toBe(false);
+  });
+
+  it("suppresses --auto when autoApprove is explicitly false", () => {
+    expect(resolveRunAutoApprove({ autoApprove: false })).toBe(false);
+    expect(resolveRunAutoApprove({ autoApprove: false, dangerouslySkipPermissions: true })).toBe(false);
+  });
+
+  it("suppresses --auto when both opt-outs are set", () => {
+    expect(resolveRunAutoApprove({ autoApprove: false, dangerouslySkipPermissions: false })).toBe(false);
+  });
+});
 
 describe("buildRunArgs", () => {
   describe("v1 argv (and the legacy-safe unknown line)", () => {
@@ -133,6 +154,29 @@ describe("buildRunArgs", () => {
       });
       expect(args).toEqual(["run", "--format", "json", "--standalone", "--model", "openai/gpt-5"]);
       expect(args).not.toContain("--auto");
+    });
+
+    it("emits no --auto when dangerouslySkipPermissions is false even with default autoApprove", () => {
+      const args = buildRunArgs({
+        line: "v2",
+        model: "openai/gpt-5",
+        variant: "",
+        printLogs: false,
+        autoApprove: resolveRunAutoApprove({ dangerouslySkipPermissions: false }),
+      });
+      expect(args).toEqual(["run", "--format", "json", "--standalone", "--model", "openai/gpt-5"]);
+      expect(args).not.toContain("--auto");
+    });
+
+    it("emits --auto when both gating config fields default", () => {
+      const args = buildRunArgs({
+        line: "v2",
+        model: "openai/gpt-5",
+        variant: "",
+        printLogs: false,
+        autoApprove: resolveRunAutoApprove({}),
+      });
+      expect(args).toContain("--auto");
     });
 
     it("appends extraArgs after every built-in v2 flag", () => {

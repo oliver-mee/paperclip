@@ -74,8 +74,9 @@ second installed line.
 | `model` | string | Yes | OpenCode model in `provider/model` format (for example `anthropic/claude-opus-5`) |
 | `variant` | string | No | Reasoning/profile variant (for example `minimal`, `high`, `max`); passed as `--variant` on v1 and folded into the model string on v2 |
 | `command` | string | No | Binary to execute (default: `opencode`) |
-| `autoApprove` | boolean | No | Pass `--auto` on v2 runs so permission requests are approved instead of auto-rejected in non-interactive mode (default: `true`; ignored by v1) |
-| `dangerouslySkipPermissions` | boolean | No | Inject a runtime OpenCode config with `permission=allow` for all tools and connections (default: `true` for unattended runs) |
+| `autoApprove` | boolean | No | Pass `--auto` on v2 runs so permission requests are approved instead of auto-rejected in non-interactive mode (default: `true`; ignored by v1). Emitted only when both `autoApprove` and `dangerouslySkipPermissions` are not explicitly `false` |
+| `dangerouslySkipPermissions` | boolean | No | Inject a runtime OpenCode config with `permission=allow` for all tools and connections (default: `true` for unattended runs). Setting it to `false` also suppresses `--auto` on v2 runs |
+| `opencodeDataDir` | string | No | Isolate OpenCode v2 state by pinning `OPENCODE_DB` at `<opencodeDataDir>/opencode.db` (default: unset — runs share the operator's persistent OpenCode database) |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `instructionsFilePath` | string | No | Absolute path to a markdown instructions file prepended to the prompt |
 | `extraArgs` | string[] | No | Additional CLI args appended after the adapter's own flags |
@@ -90,26 +91,34 @@ second installed line.
   private to the process — without it, v2's shared background service cancels
   stdin prompt delivery.
 - **Auto-approval.** v2 auto-rejects permission requests in non-interactive mode
-  unless `--auto` is passed, so the adapter passes it by default. Set
-  `adapterConfig.autoApprove: false` to opt out; the injected
+  unless `--auto` is passed, so the adapter passes it by default. It is emitted
+  only when both `adapterConfig.autoApprove` and
+  `adapterConfig.dangerouslySkipPermissions` are not explicitly `false` — either
+  opt-out suppresses `--auto`, so a run that deliberately keeps OpenCode's
+  permission prompts never has them auto-approved. The injected
   `permission=allow` runtime config (`dangerouslySkipPermissions`) still applies
   because v2 normalizes v1 config shapes.
 - **Model + variant.** v2 rejects a separate `--variant` flag. The adapter folds
   the variant into the model value as `provider/model#variant` (a model that
-  already carries a `#suffix` is passed through unchanged).
+  already carries a `#suffix` is passed through unchanged). The model preflight
+  accepts either the variant-qualified id or the bare model on v2.
 - **Skills.** Paperclip skills are linked into `~/.claude/skills` on v1 and into
   OpenCode's native `~/.config/opencode/skills` on v2 (which also reads
-  `~/.claude/skills` as a lower-precedence compat source). When the line is
-  `unknown`, both homes are linked so a run works whichever line is installed.
+  `~/.claude/skills` as a lower-precedence compat source). The v2 home is
+  resolved from the effective config home the run sees — the isolated
+  `XDG_CONFIG_HOME` of the runtime config home when that is active — so a v2 run
+  always finds them where it actually looks. When the line is `unknown`, both
+  homes are linked so a run works whichever line is installed.
 - **State isolation.** v2 stores state in SQLite (defaulting to
-  `~/.local/share/opencode/opencode.db`). When the isolated runtime config home
-  is active (the default `dangerouslySkipPermissions` path), the adapter pins
-  `OPENCODE_DB` into that run-scoped home so the run does not fall back to the
-  operator's global database. Runs without that isolation — e.g.
-  `dangerouslySkipPermissions: false`, which leaves the caller env untouched —
-  and remote targets (which strip the host-only `OPENCODE_DB`) resolve their
-  state by XDG defaults instead; managed remote credential runs re-pin
-  `OPENCODE_DB` inside the managed remote home.
+  `~/.local/share/opencode/opencode.db`). Ordinary runs leave that default DB
+  resolution untouched: the operator's persistent database is shared across runs
+  (v1 parity) so v2 logins and `--session` resume survive between runs. Runs are
+  isolated only where isolation is required — managed remote credential runs pin
+  `OPENCODE_DB` inside the managed remote home, and operators who want run-scoped
+  state set `adapterConfig.opencodeDataDir` to pin `OPENCODE_DB` at
+  `<opencodeDataDir>/opencode.db`. Remote targets strip any host-side
+  `OPENCODE_DB` (a host path does not exist there) and resolve state by XDG
+  defaults instead.
   `OPENCODE_DISABLE_PROJECT_CONFIG=true` is set on both lines
   so OpenCode never writes an `opencode.json` into the project working
   directory.

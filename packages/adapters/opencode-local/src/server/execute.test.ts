@@ -263,14 +263,34 @@ describe("OpenCode local skill injection", () => {
       await fs.writeFile(commandPath, script, "utf8");
       await fs.chmod(commandPath, 0o755);
 
+      const isSkillLink = async (target: string) =>
+        (await fs.lstat(target).catch(() => null))?.isSymbolicLink() ?? false;
+      // Inspect the skills homes AT RUN TIME: the v2 home follows the run's
+      // effective XDG_CONFIG_HOME (the isolated runtime config home when
+      // active), which is cleaned up when the run ends.
+      const runTimeSkills: { xdgConfigHome: string | null; v1Link: boolean; v2Link: boolean } = {
+        xdgConfigHome: null,
+        v1Link: false,
+        v2Link: false,
+      };
+
       runProcessMock.mockReset();
-      runProcessMock.mockResolvedValue(probeResult({
-        stdout: JSON.stringify({
-          type: "text",
-          sessionID: `session-line-${line}`,
-          part: { text: "done" },
-        }),
-      }));
+      runProcessMock.mockImplementation(async (_runId, _target, _cmd, _args, options) => {
+        const runEnv = (options as { env: Record<string, string> }).env;
+        const effectiveXdgConfigHome = runEnv.XDG_CONFIG_HOME ?? path.join(home, ".config");
+        runTimeSkills.xdgConfigHome = runEnv.XDG_CONFIG_HOME ?? null;
+        runTimeSkills.v1Link = await isSkillLink(path.join(home, ".claude", "skills", "paperclip"));
+        runTimeSkills.v2Link = await isSkillLink(
+          path.join(effectiveXdgConfigHome, "opencode", "skills", "paperclip"),
+        );
+        return probeResult({
+          stdout: JSON.stringify({
+            type: "text",
+            sessionID: `session-line-${line}`,
+            part: { text: "done" },
+          }),
+        });
+      });
       const logs: string[] = [];
 
       try {
@@ -311,23 +331,36 @@ describe("OpenCode local skill injection", () => {
         });
 
         expect(result.exitCode).toBe(0);
-        const isSkillLink = async (target: string) =>
-          (await fs.lstat(target).catch(() => null))?.isSymbolicLink() ?? false;
-        // The detected line decides the skill home: v1 → ~/.claude/skills,
-        // v2 → ~/.config/opencode/skills, undetectable → both (legacy-safe).
-        expect(await isSkillLink(path.join(home, ".claude", "skills", "paperclip"))).toBe(inV1Home);
-        expect(await isSkillLink(path.join(home, ".config", "opencode", "skills", "paperclip"))).toBe(inV2Home);
+        // The detected line decides the skill home: v1 → the HOME-based
+        // ~/.claude/skills, v2 → the EFFECTIVE config home the run sees (its own
+        // XDG_CONFIG_HOME, i.e. the isolated runtime config home when active),
+        // undetectable → both (legacy-safe).
+        expect(runTimeSkills.v1Link).toBe(inV1Home);
+        expect(runTimeSkills.v2Link).toBe(inV2Home);
         const logText = logs.join("");
+        const effectiveXdgConfigHome = runTimeSkills.xdgConfigHome ?? path.join(home, ".config");
+        if (inV2Home) {
+          // The injected v2 path must match the run's actual XDG_CONFIG_HOME.
+          expect(runTimeSkills.xdgConfigHome).toBeTruthy();
+          expect(logText).toContain(
+            `Injected OpenCode skill "paperclipai/paperclip/paperclip" into ${path.join(effectiveXdgConfigHome, "opencode", "skills")}`,
+          );
+        } else {
+          // A v1 run never touches a v2 home.
+          await expect(
+            fs.lstat(path.join(home, ".config", "opencode", "skills", "paperclip")),
+          ).rejects.toThrow();
+        }
         if (banner) {
           expect(logText).toContain(`Detected OpenCode ${banner} (line: ${line}).`);
         } else {
           expect(logText).toContain("version probe returned no version");
         }
-        // Local runs keep the isolated host-side OpenCode state database.
+        // Local runs leave OPENCODE_DB untouched so v2 state resolves to the
+        // operator's persistent database (isolation is opt-in via
+        // adapterConfig.opencodeDataDir or the managed remote homes).
         const runCall = runProcessMock.mock.calls.at(-1)!;
-        expect((runCall[4] as { env: Record<string, string> }).env.OPENCODE_DB).toContain(
-          "paperclip-opencode-config-",
-        );
+        expect((runCall[4] as { env: Record<string, string> }).env.OPENCODE_DB).toBeUndefined();
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }

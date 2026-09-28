@@ -198,6 +198,10 @@ async function createFakeRunFixture(options: {
     argsFile,
     env: {
       HOME: home,
+      // A fresh config home keeps the runtime-config copy source hermetic:
+      // the adapter copies <XDG_CONFIG_HOME>/opencode into its isolated runtime
+      // home, and a developer's real skills links would pre-seed that copy.
+      XDG_CONFIG_HOME: path.join(root, "xdg-config"),
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       FAKE_OPENCODE_MODE: options.mode,
       FAKE_OPENCODE_ARGS_FILE: argsFile,
@@ -213,6 +217,7 @@ interface CapturedRun {
   argv: string[];
   stdinBytes: number;
   stdinPrefix: string;
+  xdgConfigHome: string | null;
 }
 
 async function readCapturedRuns(argsFile: string): Promise<CapturedRun[]> {
@@ -240,6 +245,8 @@ interface RunOverrides {
   env?: Record<string, string>;
   skills?: Array<{ key: string; runtimeName: string; source: string }>;
   context?: Record<string, unknown>;
+  autoApprove?: boolean;
+  dangerouslySkipPermissions?: boolean;
 }
 
 async function runExecute(
@@ -271,6 +278,10 @@ async function runExecute(
       env: { ...fixture.env, ...overrides.env },
       ...(overrides.extraArgs ? { extraArgs: overrides.extraArgs } : {}),
       ...(overrides.skills ? { paperclipRuntimeSkills: overrides.skills } : {}),
+      ...(overrides.autoApprove !== undefined ? { autoApprove: overrides.autoApprove } : {}),
+      ...(overrides.dangerouslySkipPermissions !== undefined
+        ? { dangerouslySkipPermissions: overrides.dangerouslySkipPermissions }
+        : {}),
     },
     context: overrides.context ?? {},
     onLog: async (_stream, chunk) => {
@@ -395,6 +406,29 @@ describe("opencode-local driven by the fake opencode CLI", () => {
     expect(printLogsIndex).toBeLessThan(runIndex);
   });
 
+  it("emits no --auto for a v2 run when dangerouslySkipPermissions is false even with default autoApprove", async () => {
+    const fixture = await createFakeRunFixture({ mode: "v2", reply: V2_TEXT_ONLY_REPLY });
+
+    const { result } = await runExecute(fixture, { dangerouslySkipPermissions: false });
+
+    expect(result.exitCode).toBe(0);
+    const captured = await readCapturedArgs(fixture.argsFile);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toContain("--standalone");
+    expect(captured[0]).not.toContain("--auto");
+  });
+
+  it("emits no --auto for a v2 run when autoApprove is explicitly false", async () => {
+    const fixture = await createFakeRunFixture({ mode: "v2", reply: V2_TEXT_ONLY_REPLY });
+
+    const { result } = await runExecute(fixture, { autoApprove: false });
+
+    expect(result.exitCode).toBe(0);
+    const captured = await readCapturedArgs(fixture.argsFile);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).not.toContain("--auto");
+  });
+
   it("tolerates a v2 text-only reply with no step_finish and reports zero usage", async () => {
     const fixture = await createFakeRunFixture({ mode: "v2", reply: V2_TEXT_ONLY_REPLY });
 
@@ -454,15 +488,18 @@ describe("opencode-local driven by the fake opencode CLI", () => {
       line: "v1" as const,
       banner: "1.18.32",
       reply: V1_RUN_REPLY,
-      expectedSubpath: [".claude", "skills"],
-      unexpectedSubpath: [".config", "opencode", "skills"],
+      // v1 injects into the HOME-based ~/.claude/skills (persistent).
+      expectedSubpath: [".claude", "skills"] as string[],
+      unexpectedSubpath: [".config", "opencode", "skills"] as string[],
     },
     {
       line: "v2" as const,
       banner: "opencode v2.0.18",
       reply: V2_TEXT_ONLY_REPLY,
-      expectedSubpath: [".config", "opencode", "skills"],
-      unexpectedSubpath: [".claude", "skills"],
+      // v2 injects into the EFFECTIVE config home the run sees (its own
+      // XDG_CONFIG_HOME) — the HOME-based ~/.claude/skills is not touched.
+      expectedSubpath: null,
+      unexpectedSubpath: [".claude", "skills"] as string[],
     },
   ])(
     "injects runtime skills into the $line home picked by the detected version banner",
@@ -476,9 +513,23 @@ describe("opencode-local driven by the fake opencode CLI", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const installedSkill = path.join(fixture.home, ...expectedSubpath, "paperclip");
-      expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
-      expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
+      const capturedRuns = await readCapturedRuns(fixture.argsFile);
+      expect(capturedRuns).toHaveLength(1);
+      const runXdgConfigHome = capturedRuns[0].xdgConfigHome;
+      expect(runXdgConfigHome).toBeTruthy();
+      const injectedHome = expectedSubpath
+        ? path.join(fixture.home, ...expectedSubpath)
+        : path.join(runXdgConfigHome as string, "opencode", "skills");
+      if (expectedSubpath) {
+        const installedSkill = path.join(injectedHome, "paperclip");
+        expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
+        expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
+      }
+      // The injection message names the home the skills landed in — for v2 that
+      // must be the native skills dir under the run's actual XDG_CONFIG_HOME.
+      expect(logs.join("")).toContain(
+        `Injected OpenCode skill "paperclipai/paperclip/paperclip" into ${injectedHome}`,
+      );
       await expect(
         fs.lstat(path.join(fixture.home, ...unexpectedSubpath, "paperclip")),
       ).rejects.toThrow();

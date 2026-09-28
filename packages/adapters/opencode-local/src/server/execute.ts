@@ -28,7 +28,6 @@ import {
 import {
   asString,
   asNumber,
-  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -51,7 +50,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { buildRunArgs } from "./args.js";
+import { buildRunArgs, resolveRunAutoApprove } from "./args.js";
 import { detectOpenCodeVersion, type OpenCodeVersionLine } from "./version.js";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
@@ -172,9 +171,14 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
 }
 
 // why: the skills home depends on the detected OpenCode line — v2 reads its
-// native global dir, v1 the shared Claude dir, and `unknown` must inject into
-// both so a run works whichever line is installed. One pass per home keeps the
-// maintainer-only cleanup and the injection messages per-home accurate.
+// native global dir (resolved via XDG_CONFIG_HOME), v1 the shared Claude dir,
+// and `unknown` must inject into both so a run works whichever line is
+// installed. The v2 home must be the EFFECTIVE config home the run will see —
+// the isolated XDG_CONFIG_HOME from prepareOpenCodeRuntimeConfig when active —
+// otherwise a v2 run resolving its native skills dir via XDG_CONFIG_HOME never
+// sees the injected skills. The v1 home stays HOME-based. One pass per home
+// keeps the maintainer-only cleanup and the injection messages per-home
+// accurate.
 async function ensureOpenCodeSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
@@ -332,14 +336,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   if (executionTargetIsRemote) {
-    // why: the isolated OPENCODE_DB built by prepareOpenCodeRuntimeConfig
-    // points inside a HOST temp dir, which does not exist on the remote
-    // execution target — drop it there so a remote v2 run resolves its SQLite
-    // state under the target's own XDG default instead of a host-only path.
-    // Managed remote runs re-pin OPENCODE_DB inside the remote managed home via
-    // prepareManagedOpenCodeRemoteHomes in the remote branch below (which runs
-    // after this strip), so managed credentials still stay out of any global
-    // remote database. The now-inaccurate isolation note goes with it.
+    // why: a host-side OPENCODE_DB (from `adapterConfig.opencodeDataDir` or the
+    // caller env) points inside a HOST directory which does not exist on the
+    // remote execution target — drop it there so a remote v2 run resolves its
+    // SQLite state under the target's own XDG default instead of a host-only
+    // path. Ordinary runs no longer force an isolated OPENCODE_DB, so this only
+    // trims an explicit host-path pin. Managed remote runs pin OPENCODE_DB
+    // inside the remote managed home via prepareManagedOpenCodeRemoteHomes in
+    // the remote branch below (which runs after this strip), so managed
+    // credentials still stay out of any global remote database. The now-inaccurate
+    // isolation note goes with it.
     delete preparedRuntimeConfig.env.OPENCODE_DB;
     preparedRuntimeConfig.notes = preparedRuntimeConfig.notes.filter(
       (note) => !note.includes("OPENCODE_DB"),
@@ -410,7 +416,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog,
         openCodeSkillEntries,
         desiredOpenCodeSkillNames,
-        resolveOpenCodeSkillsHomes(config, versionLine),
+        resolveOpenCodeSkillsHomes(
+          config,
+          versionLine,
+          preparedRuntimeConfig.env.XDG_CONFIG_HOME ?? null,
+        ),
       );
     }
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
@@ -422,6 +432,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!executionTargetIsRemote) {
       await ensureOpenCodeModelConfiguredAndAvailable({
         model,
+        variant,
+        line: versionLine,
         command,
         cwd,
         env: runtimeEnv,
@@ -668,7 +680,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
-    const autoApprove = asBoolean(config.autoApprove, true);
+    // why: `--auto` is gated on BOTH opt-outs — either `autoApprove: false` or
+    // `dangerouslySkipPermissions: false` must suppress it (see
+    // resolveRunAutoApprove), so a run that deliberately keeps OpenCode's
+    // permission prompts never has them auto-approved behind the operator's back.
+    const autoApprove = resolveRunAutoApprove(config);
     const buildArgs = (resumeSessionId: string | null) =>
       buildRunArgs({
         line: versionLine,

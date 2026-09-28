@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import type { OpenCodeVersionLine } from "./version.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -316,11 +317,25 @@ export function isTruthyEnvFlag(value: string | undefined): boolean {
 
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   model?: unknown;
+  variant?: unknown;
+  line?: OpenCodeVersionLine;
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
+
+  // why: v2 runs address the configured model as `provider/model#variant`
+  // (args.ts folds the variant into --model), while `opencode models` may list
+  // either the variant-qualified id or the bare model. Accept BOTH forms so a
+  // valid config is not rejected just because the catalog carries the other
+  // form — e.g. a catalog listing only `provider/model#thinking` must pass for
+  // model=provider/model variant=thinking on the v2 line.
+  const acceptedIds = new Set<string>([model]);
+  const variant = asString(input.variant, "").trim();
+  if (input.line === "v2" && variant && !model.includes("#")) {
+    acceptedIds.add(`${model}#${variant}`);
+  }
 
   // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
   // provider/model at run time (e.g. gateway-routed models that never appear in
@@ -367,7 +382,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     return [{ id: model, label: model }];
   }
 
-  if (!models.some((entry) => entry.id === model)) {
+  if (!models.some((entry) => acceptedIds.has(entry.id))) {
     // `opencode models` reads a persistent models.dev cache. Long-lived runner
     // hosts can therefore report a stale non-empty catalog even while the
     // configured provider serves the model. Refresh once before treating a
@@ -379,7 +394,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
         cwd: input.cwd,
         env: input.env,
       });
-      if (refreshedModels.some((entry) => entry.id === model)) {
+      if (refreshedModels.some((entry) => acceptedIds.has(entry.id))) {
         return refreshedModels;
       }
       if (refreshedModels.length > 0) models = refreshedModels;

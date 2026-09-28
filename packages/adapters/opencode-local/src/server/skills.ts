@@ -28,7 +28,7 @@ export type OpenCodeSkillsTargetLine = "v1" | "v2" | "unknown";
 // compat source (r4 delta §4 / M15). Skill IDs are path-derived in v2, so the
 // leaf directory name must stay stable across both homes.
 const OPENCODE_SKILLS_SUBPATH_V1 = [".claude", "skills"] as const;
-const OPENCODE_SKILLS_SUBPATH_V2 = [".config", "opencode", "skills"] as const;
+const OPENCODE_SKILLS_SUBPATH_V2 = ["opencode", "skills"] as const;
 
 type InstalledSkillTargets = Map<string, InstalledSkillTarget>;
 
@@ -48,14 +48,22 @@ function resolveOpenCodeHome(config: Record<string, unknown>): string {
 // Resolve the skills home(s) a run should inject into for the detected OpenCode
 // version line. Omitted/`v1` keeps the historical single `~/.claude/skills`
 // target; `v2` targets the native global dir; `unknown` targets both so a run
-// works whichever line is installed.
+// works whichever line is installed. The v2 home is resolved against the
+// EFFECTIVE config home the run will see — the isolated `XDG_CONFIG_HOME` from
+// prepareOpenCodeRuntimeConfig when active — because v2 locates its native
+// skills dir via XDG_CONFIG_HOME; without it a v2 run never sees injected
+// skills. The v1 home stays HOME-based.
 export function resolveOpenCodeSkillsHomes(
   config: Record<string, unknown>,
   versionLine?: OpenCodeSkillsTargetLine,
+  effectiveXdgConfigHome?: string | null,
 ): string[] {
   const home = resolveOpenCodeHome(config);
   const v1Home = path.join(home, ...OPENCODE_SKILLS_SUBPATH_V1);
-  const v2Home = path.join(home, ...OPENCODE_SKILLS_SUBPATH_V2);
+  const configHome =
+    (typeof effectiveXdgConfigHome === "string" && effectiveXdgConfigHome.trim()) ||
+    path.join(home, ".config");
+  const v2Home = path.join(configHome, ...OPENCODE_SKILLS_SUBPATH_V2);
   switch (versionLine) {
     case "v2":
       return [v2Home];
@@ -66,6 +74,23 @@ export function resolveOpenCodeSkillsHomes(
     default:
       return [v1Home];
   }
+}
+
+// why: skill management (the registered list/sync entry points) runs without a
+// version line, so it must consider BOTH homes — `~/.claude/skills` and the
+// HOME-based `~/.config/opencode/skills` — or the skills UI installed-state
+// misses whatever the other run line installed. Management has no run env, so
+// the v2 home here is HOME-based (not an isolated runtime config home).
+export function allSkillsHomes(config: Record<string, unknown>): string[] {
+  return resolveOpenCodeSkillsHomes(config, "unknown");
+}
+
+// Management considers both homes when no version line is known.
+function resolveManagementSkillsHomes(
+  config: Record<string, unknown>,
+  versionLine?: OpenCodeSkillsTargetLine,
+): string[] {
+  return versionLine ? resolveOpenCodeSkillsHomes(config, versionLine) : allSkillsHomes(config);
 }
 
 interface SkillsTargetDescription {
@@ -161,7 +186,7 @@ async function buildOpenCodeSkillSnapshot(
 ): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
-  const homes = resolveOpenCodeSkillsHomes(config, versionLine);
+  const homes = resolveManagementSkillsHomes(config, versionLine);
   const installed = await readInstalledSkillTargetsForHomes(
     homes,
     new Set(availableEntries.map((entry) => entry.source)),
@@ -182,6 +207,10 @@ async function buildOpenCodeSkillSnapshot(
   });
 }
 
+// Management entry points: called without a version line, they consider BOTH
+// skills homes (see resolveManagementSkillsHomes) so the installed-state matches
+// whatever line a run actually used. A caller that knows the line narrows the
+// homes to that line.
 export async function listOpenCodeSkills(
   ctx: AdapterSkillContext,
   versionLine?: OpenCodeSkillsTargetLine,
@@ -199,7 +228,7 @@ export async function syncOpenCodeSkills(
     ...resolveLegacyPaperclipDesiredSkillNames({}, availableEntries),
     ...desiredSkills,
   ]);
-  const homes = resolveOpenCodeSkillsHomes(ctx.config, versionLine);
+  const homes = resolveManagementSkillsHomes(ctx.config, versionLine);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
 
   for (const skillsHome of homes) {

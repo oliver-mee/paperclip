@@ -325,7 +325,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
-  it("isolates the OpenCode v2 state database inside the disposable runtime home", async () => {
+  it("leaves OPENCODE_DB untouched on ordinary runs so v2 state stays in the operator's persistent database", async () => {
     const configHome = await makeConfigHome({ permission: "allow" });
 
     const prepared = await prepareOpenCodeRuntimeConfig({
@@ -334,21 +334,15 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     });
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
 
-    const dbPath = prepared.env.OPENCODE_DB;
-    expect(dbPath).toBe(
-      path.join(prepared.env.XDG_CONFIG_HOME, "data", "opencode", "opencode.db"),
-    );
-    // Never the operator's global v2 database.
-    expect(dbPath).not.toBe(path.join(os.homedir(), ".local", "share", "opencode", "opencode.db"));
-    // SQLite creates the db file but not its parent directory, so it must exist.
-    await expect(fs.access(path.dirname(dbPath))).resolves.toBeUndefined();
-    expect(prepared.notes.some((note) => note.includes(dbPath))).toBe(true);
+    // why: v2 logins live in the operator's database and `--session` resume
+    // reads it — forcing a throwaway database every run destroyed that state.
+    expect(prepared.env.OPENCODE_DB).toBeUndefined();
+    expect(prepared.notes.some((note) => note.includes("OPENCODE_DB"))).toBe(false);
 
     await prepared.cleanup();
-    await expect(fs.access(dbPath)).rejects.toThrow();
   });
 
-  it("overrides a caller-provided OPENCODE_DB with the isolated path when isolation is active", async () => {
+  it("preserves a caller-provided OPENCODE_DB on ordinary runs", async () => {
     const configHome = await makeConfigHome({ permission: "allow" });
 
     const prepared = await prepareOpenCodeRuntimeConfig({
@@ -357,8 +351,47 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     });
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
 
-    expect(prepared.env.OPENCODE_DB).not.toBe("/operator/opencode.db");
-    expect(prepared.env.OPENCODE_DB.startsWith(prepared.env.XDG_CONFIG_HOME)).toBe(true);
+    expect(prepared.env.OPENCODE_DB).toBe("/operator/opencode.db");
+    await prepared.cleanup();
+  });
+
+  it("pins OPENCODE_DB at <opencodeDataDir>/opencode.db when adapterConfig.opencodeDataDir is set", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+    cleanupPaths.add(root);
+    const dataDir = path.join(root, "opencode-state");
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, OPENCODE_DB: "/operator/opencode.db" },
+      config: { opencodeDataDir: dataDir },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const dbPath = path.join(dataDir, "opencode.db");
+    // The explicit isolation opt-in wins over a caller-provided OPENCODE_DB.
+    expect(prepared.env.OPENCODE_DB).toBe(dbPath);
+    // SQLite creates the db file but not its parent directory, so it must exist.
+    await expect(fs.access(dataDir)).resolves.toBeUndefined();
+    expect(prepared.notes.some((note) => note.includes(dbPath))).toBe(true);
+
+    await prepared.cleanup();
+    // The operator's data dir is persistent — never removed with the runtime home.
+    await expect(fs.access(dataDir)).resolves.toBeUndefined();
+  });
+
+  it("honours adapterConfig.opencodeDataDir even when the runtime config injection is disabled", async () => {
+    const configHome = await makeConfigHome();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+    cleanupPaths.add(root);
+    const dataDir = path.join(root, "opencode-state");
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { opencodeDataDir: dataDir, dangerouslySkipPermissions: false },
+    });
+
+    expect(prepared.env.XDG_CONFIG_HOME).toBe(configHome);
+    expect(prepared.env.OPENCODE_DB).toBe(path.join(dataDir, "opencode.db"));
     await prepared.cleanup();
   });
 

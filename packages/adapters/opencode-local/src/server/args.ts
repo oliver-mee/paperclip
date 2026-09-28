@@ -1,3 +1,4 @@
+import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 import type { OpenCodeVersionLine } from "./version.js";
 
 export interface BuildRunArgsSpec {
@@ -8,6 +9,19 @@ export interface BuildRunArgsSpec {
   printLogs: boolean;
   autoApprove: boolean;
   extraArgs?: string[];
+}
+
+// why: `--auto` auto-approves v2 permission requests in non-interactive mode.
+// Emitting it is only safe while BOTH opt-outs are unset: `autoApprove: false`
+// turns auto-approval off explicitly, and `dangerouslySkipPermissions: false`
+// means the run deliberately keeps OpenCode's own permission prompts — `--auto`
+// there would silently approve what the operator asked to gate (security).
+// Either explicit opt-out suppresses `--auto`.
+export function resolveRunAutoApprove(config: Record<string, unknown>): boolean {
+  return (
+    asBoolean(config.autoApprove, true) &&
+    asBoolean(config.dangerouslySkipPermissions, true)
+  );
 }
 
 // v2 folds the v1 `--variant` flag into the model string as
@@ -30,7 +44,9 @@ function resolveV2ModelValue(model: string, variant: string): string | null {
 //   `--model`, `--variant` flags.
 // - v2: `--print-logs` is a global flag that must precede `run`; `--standalone`
 //   keeps the run non-interactive; `--auto` is required because v2 otherwise
-//   auto-REJECTS permission requests in non-interactive mode; the variant rides
+//   auto-REJECTS permission requests in non-interactive mode (emitted per
+//   resolveRunAutoApprove, which suppresses it when `autoApprove` or
+//   `dangerouslySkipPermissions` is explicitly false); the variant rides
 //   inside `--model` as `provider/model#variant`.
 //
 // `extraArgs` are appended last on both lines so operator-supplied passthrough

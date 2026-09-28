@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  allSkillsHomes,
   listOpenCodeSkills,
   resolveOpenCodeSkillsHomes,
   syncOpenCodeSkills,
@@ -87,20 +88,58 @@ describe("resolveOpenCodeSkillsHomes", () => {
       "/tmp/paperclip-skills-home/.config/opencode/skills",
     ]);
   });
+
+  it("resolves the v2 home against the effective XDG_CONFIG_HOME the run will see", () => {
+    expect(resolveOpenCodeSkillsHomes(config, "v2", "/runtime/config-home")).toEqual([
+      "/runtime/config-home/opencode/skills",
+    ]);
+    // The v1 home stays HOME-based; only the v2 home follows the config home.
+    expect(resolveOpenCodeSkillsHomes(config, "unknown", "/runtime/config-home")).toEqual([
+      "/tmp/paperclip-skills-home/.claude/skills",
+      "/runtime/config-home/opencode/skills",
+    ]);
+  });
+});
+
+describe("allSkillsHomes", () => {
+  it("returns both HOME-based skills homes for management", () => {
+    expect(allSkillsHomes({ env: { HOME: "/tmp/paperclip-skills-home" } })).toEqual([
+      "/tmp/paperclip-skills-home/.claude/skills",
+      "/tmp/paperclip-skills-home/.config/opencode/skills",
+    ]);
+  });
 });
 
 describe("opencode local skills injection", () => {
-  it("installs only into the legacy Claude home by default", async () => {
+  it("installs into both skills homes by default so management matches either run line", async () => {
     const { home, source, ctx } = await makeFixture();
 
     const snapshot = await syncOpenCodeSkills(ctx, [KNOWN_SKILL.key]);
 
     expect(snapshot.entries.find((entry) => entry.key === KNOWN_SKILL.key)?.state).toBe("installed");
-    expect(snapshot.warnings).toContain(
-      "OpenCode currently uses the shared Claude skills home (~/.claude/skills).",
-    );
     await expectSymlinkTo(path.join(home, ".claude", "skills", KNOWN_SKILL.runtimeName), source);
-    await expect(fs.access(path.join(home, ".config", "opencode", "skills"))).rejects.toThrow();
+    await expectSymlinkTo(
+      path.join(home, ".config", "opencode", "skills", KNOWN_SKILL.runtimeName),
+      source,
+    );
+  });
+
+  it("reports a skill installed in only the legacy home as installed by default", async () => {
+    const { ctx } = await makeFixture();
+    await syncOpenCodeSkills(ctx, [KNOWN_SKILL.key], "v1");
+
+    const snapshot = await listOpenCodeSkills(ctx);
+
+    expect(snapshot.entries.find((entry) => entry.key === KNOWN_SKILL.key)?.state).toBe("installed");
+  });
+
+  it("reports a skill installed in only the v2 native home as installed by default", async () => {
+    const { ctx } = await makeFixture();
+    await syncOpenCodeSkills(ctx, [KNOWN_SKILL.key], "v2");
+
+    const snapshot = await listOpenCodeSkills(ctx);
+
+    expect(snapshot.entries.find((entry) => entry.key === KNOWN_SKILL.key)?.state).toBe("installed");
   });
 
   it("installs into the v2 native home when the version line is v2", async () => {

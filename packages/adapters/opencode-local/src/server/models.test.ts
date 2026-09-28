@@ -96,6 +96,68 @@ describe("openCode models", () => {
     ).rejects.toThrow("OpenCode requires `adapterConfig.model`");
   });
 
+  it("accepts a variant-qualified catalog id for a v2 run with a configured variant", async () => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "provider/model#thinking\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({
+        model: "provider/model",
+        variant: "thinking",
+        line: "v2",
+      }),
+    ).resolves.toContainEqual({
+      id: "provider/model#thinking",
+      label: "provider/model#thinking",
+    });
+  });
+
+  it("still accepts the bare model id for a v2 run with a configured variant", async () => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "acme/thinker\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({
+        model: "acme/thinker",
+        variant: "thinking",
+        line: "v2",
+      }),
+    ).resolves.toContainEqual({ id: "acme/thinker", label: "acme/thinker" });
+  });
+
+  it("does not accept a variant-qualified catalog id when the line is not v2", async () => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "provider/model#thinking\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({
+        model: "provider/model",
+        variant: "thinking",
+      }),
+    ).rejects.toThrow("Configured OpenCode model is unavailable: provider/model");
+  });
+
   it("retries a transient `opencode models` failure with backoff before succeeding", async () => {
     vi.useFakeTimers();
     const spy = vi
