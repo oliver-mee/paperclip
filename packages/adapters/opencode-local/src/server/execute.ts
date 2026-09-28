@@ -28,6 +28,7 @@ import {
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -50,6 +51,8 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
+import { buildRunArgs } from "./args.js";
+import { detectOpenCodeVersion, type OpenCodeVersionLine } from "./version.js";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
@@ -60,7 +63,7 @@ import {
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { resolveOpenCodeSkillsHome } from "./skills.js";
+import { resolveOpenCodeSkillsHomes } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -168,40 +171,46 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   }
 }
 
+// why: the skills home depends on the detected OpenCode line — v2 reads its
+// native global dir, v1 the shared Claude dir, and `unknown` must inject into
+// both so a run works whichever line is installed. One pass per home keeps the
+// maintainer-only cleanup and the injection messages per-home accurate.
 async function ensureOpenCodeSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
   desiredSkillNames?: string[],
-  skillsHome = resolveOpenCodeSkillsHome({}),
+  skillsHomes: string[] = resolveOpenCodeSkillsHomes({}),
 ) {
-  await fs.mkdir(skillsHome, { recursive: true });
   const desiredSet = new Set(desiredSkillNames ?? skillsEntries.map((entry) => entry.key));
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
-  const removedSkills = await removeMaintainerOnlySkillSymlinks(
-    skillsHome,
-    selectedEntries.map((entry) => entry.runtimeName),
-  );
-  for (const skillName of removedSkills) {
-    await onLog(
-      "stderr",
-      `[paperclip] Removed maintainer-only OpenCode skill "${skillName}" from ${skillsHome}\n`,
+  for (const skillsHome of skillsHomes) {
+    await fs.mkdir(skillsHome, { recursive: true });
+    const removedSkills = await removeMaintainerOnlySkillSymlinks(
+      skillsHome,
+      selectedEntries.map((entry) => entry.runtimeName),
     );
-  }
-  for (const entry of selectedEntries) {
-    const target = path.join(skillsHome, entry.runtimeName);
+    for (const skillName of removedSkills) {
+      await onLog(
+        "stderr",
+        `[paperclip] Removed maintainer-only OpenCode skill "${skillName}" from ${skillsHome}\n`,
+      );
+    }
+    for (const entry of selectedEntries) {
+      const target = path.join(skillsHome, entry.runtimeName);
 
-    try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
-      if (result === "skipped") continue;
-      await onLog(
-        "stderr",
-        `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} OpenCode skill "${entry.key}" into ${skillsHome}\n`,
-      );
-    } catch (err) {
-      await onLog(
-        "stderr",
-        `[paperclip] Failed to inject OpenCode skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      try {
+        const result = await ensurePaperclipSkillSymlink(entry.source, target);
+        if (result === "skipped") continue;
+        await onLog(
+          "stderr",
+          `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} OpenCode skill "${entry.key}" into ${skillsHome}\n`,
+        );
+      } catch (err) {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to inject OpenCode skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
     }
   }
 }
@@ -258,14 +267,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredOpenCodeSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, openCodeSkillEntries);
-  if (!executionTargetIsRemote) {
-    await ensureOpenCodeSkillsInjected(
-      onLog,
-      openCodeSkillEntries,
-      desiredOpenCodeSkillNames,
-      resolveOpenCodeSkillsHome(config),
-    );
-  }
+  // Skill injection is deferred until after the OpenCode version probe below so
+  // the skills land in the home(s) for the detected line. Remote targets are
+  // skipped here: they receive skills via the runtime asset sync (legacy
+  // ~/.claude/skills) inside the remote branch.
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
@@ -326,6 +331,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  if (executionTargetIsRemote) {
+    // why: the isolated OPENCODE_DB built by prepareOpenCodeRuntimeConfig
+    // points inside a HOST temp dir, which does not exist on the remote
+    // execution target — drop it there so a remote v2 run resolves its SQLite
+    // state under the target's own XDG default instead of a host-only path.
+    // Managed remote runs re-pin OPENCODE_DB inside the remote managed home via
+    // prepareManagedOpenCodeRemoteHomes in the remote branch below (which runs
+    // after this strip), so managed credentials still stay out of any global
+    // remote database. The now-inaccurate isolation note goes with it.
+    delete preparedRuntimeConfig.env.OPENCODE_DB;
+    preparedRuntimeConfig.notes = preparedRuntimeConfig.notes.filter(
+      (note) => !note.includes("OPENCODE_DB"),
+    );
+  }
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
@@ -354,6 +373,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       installCommand: SANDBOX_INSTALL_COMMAND,
       timeoutSec,
     });
+    // Probe the CLI version once per run so the argv can adapt to the OpenCode
+    // v1/v2 flag differences. Best-effort: a probe that cannot answer (missing
+    // command, timeout, unparseable banner) resolves to `unknown`, which keeps
+    // the legacy v1 argv. The probe runs `opencode --version` as a LOCAL child
+    // process, so it is skipped on remote targets where that binary is not the
+    // one that will execute — those runs stay on the legacy v1 argv until a
+    // remote-aware probe exists. The timeout is bounded so a hung `--version`
+    // can never eat into the run timeout budget.
+    const detectedVersion = executionTargetIsRemote
+      ? null
+      : await detectOpenCodeVersion(command, {
+          cwd,
+          env: runtimeEnv,
+          timeoutMs: Math.min(Math.max(timeoutSec, 1) * 1000, 5_000),
+        });
+    // why: remote execution targets default to "unknown" because the local
+    // `--version` probe must not run for them — it would probe the HOST binary
+    // rather than the one that executes remotely (execute.remote.test.ts pins
+    // runChildProcess calls, so the probe stays skipped there). KNOWN
+    // LIMITATION: while the line is "unknown", remote runs keep the legacy v1
+    // argv and the legacy ~/.claude/skills asset home until a remote-aware
+    // probe exists; locally an undetectable version stays "unknown" too, which
+    // is legacy-safe (v1 argv + injection into both skills homes).
+    const versionLine: OpenCodeVersionLine = detectedVersion?.line ?? "unknown";
+    await onLog(
+      "stdout",
+      detectedVersion
+        ? `[paperclip] Detected OpenCode ${detectedVersion.raw} (line: ${versionLine}).\n`
+        : executionTargetIsRemote
+          ? "[paperclip] OpenCode version probe skipped for the remote execution target; using the legacy v1 CLI arguments.\n"
+          : "[paperclip] OpenCode version probe returned no version; using the legacy v1 CLI arguments.\n",
+    );
+    if (!executionTargetIsRemote) {
+      await ensureOpenCodeSkillsInjected(
+        onLog,
+        openCodeSkillEntries,
+        desiredOpenCodeSkillNames,
+        resolveOpenCodeSkillsHomes(config, versionLine),
+      );
+    }
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     let loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
@@ -609,15 +668,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
-    const buildArgs = (resumeSessionId: string | null) => {
-      const args = ["run", "--format", "json"];
-      if (printLogs) args.push("--print-logs");
-      if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
-      if (variant) args.push("--variant", variant);
-      if (extraArgs.length > 0) args.push(...extraArgs);
-      return args;
-    };
+    const autoApprove = asBoolean(config.autoApprove, true);
+    const buildArgs = (resumeSessionId: string | null) =>
+      buildRunArgs({
+        line: versionLine,
+        model,
+        variant,
+        resumeSessionId,
+        printLogs,
+        autoApprove,
+        extraArgs,
+      });
 
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildArgs(resumeSessionId);

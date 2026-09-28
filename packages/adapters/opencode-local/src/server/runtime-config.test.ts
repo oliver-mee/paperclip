@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  prepareManagedOpenCodeRemoteHomes,
+  prepareOpenCodeRuntimeConfig,
+} from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -320,5 +323,117 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+
+  it("isolates the OpenCode v2 state database inside the disposable runtime home", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const dbPath = prepared.env.OPENCODE_DB;
+    expect(dbPath).toBe(
+      path.join(prepared.env.XDG_CONFIG_HOME, "data", "opencode", "opencode.db"),
+    );
+    // Never the operator's global v2 database.
+    expect(dbPath).not.toBe(path.join(os.homedir(), ".local", "share", "opencode", "opencode.db"));
+    // SQLite creates the db file but not its parent directory, so it must exist.
+    await expect(fs.access(path.dirname(dbPath))).resolves.toBeUndefined();
+    expect(prepared.notes.some((note) => note.includes(dbPath))).toBe(true);
+
+    await prepared.cleanup();
+    await expect(fs.access(dbPath)).rejects.toThrow();
+  });
+
+  it("overrides a caller-provided OPENCODE_DB with the isolated path when isolation is active", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, OPENCODE_DB: "/operator/opencode.db" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    expect(prepared.env.OPENCODE_DB).not.toBe("/operator/opencode.db");
+    expect(prepared.env.OPENCODE_DB.startsWith(prepared.env.XDG_CONFIG_HOME)).toBe(true);
+    await prepared.cleanup();
+  });
+
+  it("preserves a caller-provided OPENCODE_DB when isolation is disabled", async () => {
+    const configHome = await makeConfigHome();
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, OPENCODE_DB: "/operator/opencode.db" },
+      config: { dangerouslySkipPermissions: false },
+    });
+
+    expect(prepared.env).toEqual({
+      XDG_CONFIG_HOME: configHome,
+      OPENCODE_DB: "/operator/opencode.db",
+    });
+    expect(prepared.notes).toEqual([]);
+    await prepared.cleanup();
+  });
+
+  it("leaves the env untouched for a remote execution target", async () => {
+    const configHome = await makeConfigHome();
+    const env = { XDG_CONFIG_HOME: configHome };
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env,
+      config: {},
+      targetIsRemote: true,
+    });
+
+    expect(prepared.env).toEqual(env);
+    expect(prepared.env.OPENCODE_DB).toBeUndefined();
+    expect(prepared.notes).toEqual([]);
+    await prepared.cleanup();
+  });
+});
+
+describe("prepareManagedOpenCodeRemoteHomes", () => {
+  it("redirects the v2 state database into the managed run home", () => {
+    const env: Record<string, string> = {};
+
+    prepareManagedOpenCodeRemoteHomes({
+      env,
+      config: { managedAiConnection: true },
+      runtimeRootDir: "/remote/root",
+      runId: "run-1",
+    });
+
+    const home = "/remote/root/managed-auth/run-1";
+    expect(env.HOME).toBe(home);
+    expect(env.XDG_DATA_HOME).toBe(`${home}/data`);
+    expect(env.OPENCODE_DB).toBe(`${home}/data/opencode/opencode.db`);
+  });
+
+  it("leaves the env untouched without a managed connection", () => {
+    const env: Record<string, string> = { HOME: "/existing" };
+
+    prepareManagedOpenCodeRemoteHomes({
+      env,
+      config: {},
+      runtimeRootDir: "/remote/root",
+      runId: "run-1",
+    });
+
+    expect(env).toEqual({ HOME: "/existing" });
+    expect(env.OPENCODE_DB).toBeUndefined();
+  });
+
+  it("throws without an isolated runtime root for managed auth", () => {
+    expect(() =>
+      prepareManagedOpenCodeRemoteHomes({
+        env: {},
+        config: { managedAiConnection: true },
+        runtimeRootDir: null,
+        runId: "run-1",
+      }),
+    ).toThrow("Managed OpenCode authentication requires an isolated remote runtime directory.");
   });
 });
