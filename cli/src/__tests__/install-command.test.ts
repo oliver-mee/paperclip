@@ -135,6 +135,10 @@ describe("managed install commands", () => {
         return { stdout: "", stderr: "" };
       }
       if (file === "corepack") {
+        if (args.includes("--filter")) {
+          const server = JSON.parse(fs.readFileSync(path.join(String(options?.cwd), "server", "package.json"), "utf8"));
+          expect(server.dependencies["@paperclipai/db"]).toBe("workspace:*");
+        }
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packed = readPackageVersion(path.join(String(options?.cwd ?? ""), args[args.indexOf("--dir") + 1]));

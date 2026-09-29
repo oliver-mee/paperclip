@@ -98,14 +98,14 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
 // workspace:* to the dependency's own version. release.sh unifies them with release-package-map.mjs
 // set-version, but that script validates every public package in the repo. Rewrite only the packages
 // this install packs, so an unrelated fork package cannot stop the install.
-export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspacePackages: ReleasePackageEntry[], version: string): void {
+export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspacePackages: ReleasePackageEntry[], version: string, options: { preserveWorkspaceRanges?: boolean } = {}): void {
   const stagedNames = new Set(workspacePackages.map((entry) => entry.name));
   const packageDirs = [...workspacePackages.map((entry) => entry.dir), "cli"];
   for (const packageDir of packageDirs) {
     const packageJsonPath = path.join(checkoutPath, packageDir, "package.json");
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as Record<string, unknown>;
     packageJson.version = version;
-    for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"] as const) {
+    for (const section of options.preserveWorkspaceRanges ? [] : ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"] as const) {
       const dependencies = packageJson[section];
       if (!dependencies || typeof dependencies !== "object") continue;
       for (const [dependencyName, range] of Object.entries(dependencies as Record<string, unknown>)) {
@@ -357,7 +357,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     const sourceMetadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const metadata = { version: resolveGitRefVersion(ref) ?? sourceMetadata.version };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
-    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version);
+    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version, { preserveWorkspaceRanges: true });
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     // Stage the non-built publish artifacts the way release.sh does. Bundled packages go through
@@ -367,6 +367,8 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       fs.rmSync(path.join(checkoutPath, packageDir, "skills"), { recursive: true, force: true });
       fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, packageDir, "skills"), { recursive: true });
     }
+    // pnpm needs workspace ranges to traverse and build the dependency graph above.
+    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
       const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
