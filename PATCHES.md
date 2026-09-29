@@ -17,6 +17,7 @@ Base: `v2026.916.1` (`d554c4789`).
 | `fix(ui): serve a fixed-colour favicon URL per colour scheme` | The SVG favicon is cached in whichever colour scheme loaded first, so it can go invisible after a theme switch. MAG-418. | [#14374](https://github.com/paperclipai/paperclip/pull/14374) (fixes #14371) | open |
 | `Stop duplicating wake context in adapter environments (#13891)` | The ACPX lane (and every built-in adapter) copied the whole wake payload into `PAPERCLIP_WAKE_PAYLOAD_JSON`; a long thread pushed it past Linux's 128 KiB per-string limit and the seat failed `spawn E2BIG` (Leonard on MAG-380). MAG-451. | [#13891](https://github.com/paperclipai/paperclip/pull/13891) | merged upstream after 916.1; drop on the next rebase |
 | `fix: bound launch environments and continuation history against E2BIG` | Guards any other oversized env value and caps the continuation envelope (history, objective, receipts) so long threads stay bounded. Hand-port of four commits onto 916.1. MAG-451. | [#14092](https://github.com/paperclipai/paperclip/pull/14092) | open |
+| `fix(adapter-utils): keep server-only secrets out of agent child envs` | The hermes adapter (and opencode's `models` helper) builds its child env from `...process.env`, which `runChildProcess` spread over the sanitised base. That returned the agent JWT signing secret and `DATABASE_URL` from the instance `.env` to every hermes run. The merged env now drops the server-only keys when they carry the server's own value. MAG-455. | Private security advisory to be filed (upstream `SECURITY.md` forbids public issues); master still affected | local only, **not pushed** until the advisory is filed |
 
 Not carried, on purpose:
 
@@ -67,7 +68,7 @@ and successful seat runs. This does not claim a replay of the real MAG-380 conve
 | MAG-451 | E2BIG patches and deployment complete; stamping requirement superseded and old `-2` restart request cancelled. Only an explicitly authorised real MAG-380 continuation remains unverified by this repair. Do not port the same patches or request another restart. |
 | MAG-452 | Closed after MAG-457 verification. Missing READY came from the wrong server, not evidence that the unit should be changed to `Type=simple`. Investigate sequence collisions only if they recur on a verified current payload; do not repair DB records from the old log alone. |
 | MAG-454 | Closed: wrong module resolution caused missing routes. Do not add duplicate routes or reorder middleware to fix historical `-2` failures. |
-| MAG-455 | Separate backlog security verification. Existing modern adapter sanitizers dropped a dummy signing-secret value in checks, but that does not prove every fresh agent environment or historical exposure safe. Verify without printing the secret; assess rotation from actual exposure evidence. |
+| MAG-455 | Live check on `-4` found the signing secret and `DATABASE_URL` in `hermes_local` run envs; `claude_local` (ACPX) was clean. Fix is the `adapter-utils` row above; deploying it and rotating are Oliver's decision on MAG-455. |
 
 Keep remaining work in backlog until Oliver releases it. Do not reopen completed
 incident tasks merely because the displayed version is `0.3.1`.
