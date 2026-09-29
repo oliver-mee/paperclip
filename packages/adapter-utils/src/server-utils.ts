@@ -3424,6 +3424,44 @@ export function sanitizeInheritedPaperclipEnv(
   return env;
 }
 
+// Server-only values that must never reach an agent child. The inherited base
+// is already cleaned by sanitizeInheritedPaperclipEnv, but adapters that build
+// their child env from `...process.env` (hermes, and opencode's helper spawns)
+// pass these straight back in through opts.env, and DATABASE_URL / auth
+// secrets are not PAPERCLIP_* keys at all.
+export const SERVER_ONLY_ENV_KEYS = [
+  "PAPERCLIP_AGENT_JWT_SECRET",
+  "PAPERCLIP_DECISION_SIGNING_SECRET",
+  "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+  "PAPERCLIP_WORKSPACE_HANDOFF_SECRET",
+  "PAPERCLIP_SECRETS_MASTER_KEY",
+  "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
+  "PAPERCLIP_SECRETS_PROVIDER",
+  "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN",
+  "PAPERCLIP_CONFIG",
+  "PAPERCLIP_HOME",
+  "PAPERCLIP_INSTANCE_ID",
+  "BETTER_AUTH_SECRET",
+  "DATABASE_URL",
+] as const;
+
+/**
+ * Drop server-only keys from a merged child env when they carry the server's
+ * own value. Matching on value keeps an operator-configured key (for example
+ * an agent whose project needs its own DATABASE_URL) while removing the copy
+ * that leaked in from the server process.
+ */
+export function stripServerOnlyEnv<T extends Record<string, string | undefined>>(
+  env: T,
+  serverEnv: NodeJS.ProcessEnv = process.env,
+): T {
+  for (const key of SERVER_ONLY_ENV_KEYS) {
+    const serverValue = serverEnv[key];
+    if (serverValue !== undefined && env[key] === serverValue) delete env[key];
+  }
+  return env;
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -4607,10 +4645,12 @@ export async function runChildProcess(
     const {
       env: prunedRawMerged,
       dropped: droppedEnvKeys,
-    } = pruneOversizedLaunchEnvWithReport({
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
-    });
+    } = pruneOversizedLaunchEnvWithReport(
+      stripServerOnlyEnv({
+        ...sanitizeInheritedPaperclipEnv(process.env),
+        ...opts.env,
+      }),
+    );
     if (droppedEnvKeys.length) {
       onLogError(
         new Error(
@@ -4646,7 +4686,7 @@ export async function runChildProcess(
       // The SSH lane folds the whole remote env into a single `sh -c` argv
       // string, so it needs the same oversized-value pruning as the child env.
       remoteEnv: opts.remoteExecution
-        ? pruneOversizedLaunchEnv(opts.env) as Record<string, string>
+        ? pruneOversizedLaunchEnv(stripServerOnlyEnv({ ...opts.env })) as Record<string, string>
         : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
