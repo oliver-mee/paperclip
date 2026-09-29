@@ -27,7 +27,9 @@ export function resolveOpenCodeSkillsHome(config: Record<string, unknown>) {
       : {};
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
-  return path.join(home, ".claude", "skills");
+  // OpenCode's own global skills dir, not the Claude-shared ~/.claude/skills: pruning maintainer-only
+  // links there removed skills that interactive Claude sessions and other agents rely on.
+  return path.join(home, ".config", "opencode", "skills");
 }
 
 async function buildOpenCodeSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
@@ -41,14 +43,12 @@ async function buildOpenCodeSkillSnapshot(config: Record<string, unknown>): Prom
     desiredSkills,
     installed,
     skillsHome,
-    locationLabel: "~/.claude/skills",
-    installedDetail: "Installed in the shared Claude/OpenCode skills home.",
-    missingDetail: "Configured but not currently linked into the shared Claude/OpenCode skills home.",
-    externalConflictDetail: "Skill name is occupied by an external installation in the shared skills home.",
-    externalDetail: "Installed outside Paperclip management in the shared skills home.",
-    warnings: [
-      "OpenCode currently uses the shared Claude skills home (~/.claude/skills).",
-    ],
+    locationLabel: "~/.config/opencode/skills",
+    installedDetail: "Installed in the OpenCode global skills home.",
+    missingDetail: "Configured but not currently linked into the OpenCode global skills home.",
+    externalConflictDetail: "Skill name is occupied by an external installation in the OpenCode skills home.",
+    externalDetail: "Installed outside Paperclip management in the OpenCode skills home.",
+    warnings: [],
   });
 }
 

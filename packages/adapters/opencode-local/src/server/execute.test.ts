@@ -140,10 +140,11 @@ describe("OpenCode local skill injection", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const installedSkill = path.join(configuredHome, ".claude", "skills", "paperclip");
+      const installedSkill = path.join(configuredHome, ".config", "opencode", "skills", "paperclip");
       expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
-      await expect(fs.lstat(path.join(processHome, ".claude", "skills", "paperclip"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(processHome, ".config", "opencode", "skills", "paperclip"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(configuredHome, ".claude", "skills", "paperclip"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
