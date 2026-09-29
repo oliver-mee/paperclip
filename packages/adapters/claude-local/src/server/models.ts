@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { models as DIRECT_MODELS } from "../index.js";
 
@@ -53,9 +56,34 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]);
 }
 
-function resolveAnthropicApiKey(): string | null {
+type AnthropicCredential = { value: string; kind: "api_key" | "bearer" };
+
+// Subscription auth never sets ANTHROPIC_API_KEY, so discovery used to fall back to the static list.
+// /v1/models accepts a Claude OAuth token as a Bearer credential (read-only metadata, no billing), so
+// fall back to the subscription token: env first, then the server host's Claude CLI login. Nothing is
+// copied into process.env, so run billing is untouched.
+function readClaudeCliOauthToken(): string | null {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude");
+    const raw = JSON.parse(readFileSync(path.join(configDir, ".credentials.json"), "utf8")) as {
+      claudeAiOauth?: { accessToken?: unknown };
+    };
+    const token = raw?.claudeAiOauth?.accessToken;
+    return typeof token === "string" && token.trim().length > 0 ? token.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveAnthropicApiKey(): AnthropicCredential | null {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  return apiKey && apiKey.length > 0 ? apiKey : null;
+  if (apiKey && apiKey.length > 0) return { value: apiKey, kind: "api_key" };
+  for (const name of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]) {
+    const token = process.env[name]?.trim();
+    if (token && token.length > 0) return { value: token, kind: "bearer" };
+  }
+  const cliToken = readClaudeCliOauthToken();
+  return cliToken ? { value: cliToken, kind: "bearer" } : null;
 }
 
 function resolveAnthropicBaseUrl(): string {
@@ -63,14 +91,16 @@ function resolveAnthropicBaseUrl(): string {
   return baseUrl && baseUrl.length > 0 ? baseUrl.replace(/\/+$/, "") : "https://api.anthropic.com";
 }
 
-async function fetchAnthropicModels(apiKey: string, baseUrl: string): Promise<AdapterModel[]> {
+async function fetchAnthropicModels(apiKey: AnthropicCredential, baseUrl: string): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ANTHROPIC_MODELS_TIMEOUT_MS);
   try {
     const response = await fetch(`${baseUrl}${ANTHROPIC_MODELS_ENDPOINT}`, {
       headers: {
         "anthropic-version": ANTHROPIC_API_VERSION,
-        "x-api-key": apiKey,
+        ...(apiKey.kind === "bearer"
+          ? { Authorization: `Bearer ${apiKey.value}` }
+          : { "x-api-key": apiKey.value }),
       },
       signal: controller.signal,
     });
@@ -112,7 +142,7 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
 
   const now = Date.now();
   const baseUrl = resolveAnthropicBaseUrl();
-  const keyFingerprint = fingerprint(apiKey);
+  const keyFingerprint = fingerprint(apiKey.value);
   if (
     options?.forceRefresh !== true &&
     cached &&

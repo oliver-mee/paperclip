@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
 import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
@@ -17,12 +20,19 @@ vi.mock("acpx/runtime", () => ({
 }));
 
 describe("adapter model listing", () => {
+  let claudeConfigDir = "";
+
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    // Point Claude credential discovery at an empty dir so the host's own CLI login never leaks in.
+    claudeConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-claude-config-"));
+    process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
@@ -30,6 +40,11 @@ describe("adapter model listing", () => {
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    fs.rmSync(claudeConfigDir, { recursive: true, force: true });
   });
 
   it("returns an empty list for unknown adapters", async () => {
@@ -117,6 +132,55 @@ describe("adapter model listing", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(initial.some((model) => model.id === "claude-sonnet-4-20250514")).toBe(true);
     expect(refreshed.some((model) => model.id === "claude-opus-4-8-20260529")).toBe(true);
+  });
+
+  it("discovers claude models with a subscription OAuth token from the env as a Bearer credential", async () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-env-token";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: "claude-opus-4-8-20260529", display_name: "Claude Opus 4.8" }] }),
+    } as Response);
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const headers = (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer oauth-env-token");
+    expect(headers["x-api-key"]).toBeUndefined();
+    expect(models.some((model) => model.id === "claude-opus-4-8-20260529")).toBe(true);
+  });
+
+  it("falls back to the host Claude CLI login when no Anthropic credential is in the env", async () => {
+    fs.writeFileSync(
+      path.join(claudeConfigDir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "oauth-cli-token" } }),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: "claude-opus-4-8-20260529", display_name: "Claude Opus 4.8" }] }),
+    } as Response);
+
+    const models = await listAdapterModels("claude_local");
+
+    const headers = (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer oauth-cli-token");
+    expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(models.some((model) => model.id === "claude-opus-4-8-20260529")).toBe(true);
+  });
+
+  it("keeps sending an API key as x-api-key", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-api-key";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-env-token";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [] }),
+    } as Response);
+
+    await listAdapterModels("claude_local");
+
+    const headers = (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers["x-api-key"]).toBe("test-api-key");
+    expect(headers.Authorization).toBeUndefined();
   });
 
   it("falls back to static claude models when Anthropic model discovery fails", async () => {
