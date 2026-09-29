@@ -222,6 +222,35 @@ export async function smokePayload(payloadPath: string, expectedVersion: string,
   }
 }
 
+// Resolve with Node's ESM import conditions, just as the bundled CLI loads the server. Checking
+// only the top-level manifests misses a stale registry copy nested under paperclipai/node_modules.
+export async function verifyGitPayload(payloadPath: string, expectedVersion: string, runCommand: CommandRunner): Promise<void> {
+  await runCommand(process.execPath, ["--experimental-import-meta-resolve", "--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { pathToFileURL, fileURLToPath } from 'node:url';
+    const [payload, version] = process.argv.slice(1);
+    const read = root => JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    const installed = read(payload);
+    const names = Object.entries(installed.dependencies ?? {})
+      .filter(([name, spec]) => name.startsWith('@paperclipai/') && typeof spec === 'string' && spec.endsWith('.tgz'))
+      .map(([name]) => name);
+    if (!names.includes('@paperclipai/server')) throw new Error('Git payload has no staged server dependency');
+    const roots = new Map(['paperclipai', ...names].map(name => [name, fs.realpathSync(path.join(payload, 'node_modules', name))]));
+    for (const [name, root] of roots) {
+      const pkg = read(root);
+      if (pkg.version !== version) throw new Error(name + ' version mismatch: ' + pkg.version + ' != ' + version);
+      for (const [dep, range] of Object.entries({...pkg.dependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies})) {
+        if (!roots.has(dep)) continue;
+        if (range !== version) throw new Error(name + ' dependency mismatch: ' + dep + '@' + range + ' != ' + version);
+        const resolved = fs.realpathSync(fileURLToPath(import.meta.resolve(dep, pathToFileURL(path.join(root, 'dist/index.js')).href)));
+        if (!resolved.startsWith(roots.get(dep) + path.sep)) throw new Error(name + ' resolves ' + dep + ' outside its staged package: ' + resolved);
+      }
+    }
+    if (read(roots.get('paperclipai')).dependencies?.['@paperclipai/server'] !== version) throw new Error('CLI is missing its staged server dependency');
+  `, payloadPath, expectedVersion], { maxBuffer: 1024 * 1024 });
+}
+
 export async function installNpmPayload(
   version: string,
   runCommand: CommandRunner,
@@ -293,6 +322,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
   const payloadPath = payloadPathFor(paths, "git", identifier);
   if (fs.existsSync(payloadPath)) {
     const metadata = JSON.parse(fs.readFileSync(path.join(payloadPath, "node_modules", "paperclipai", "package.json"), "utf8")) as { version: string };
+    await verifyGitPayload(payloadPath, metadata.version, runCommand);
     await smokePayload(payloadPath, metadata.version, runCommand);
     return { payloadPath, reused: true, version: metadata.version };
   }
@@ -322,6 +352,12 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("tar", ["-xzf", archivePath, "--strip-components=1", "-C", checkoutPath], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["enable", "pnpm", "--install-directory", pnpmShimDir], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // Capture the workspace closure and stamp versions before build-npm materializes the CLI's
+    // publish manifest. Afterwards its server dependency is a concrete version, not workspace:*.
+    const sourceMetadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
+    const metadata = { version: resolveGitRefVersion(ref) ?? sourceMetadata.version };
+    const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
+    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version);
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     // Stage the non-built publish artifacts the way release.sh does. Bundled packages go through
@@ -331,10 +367,6 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       fs.rmSync(path.join(checkoutPath, packageDir, "skills"), { recursive: true, force: true });
       fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, packageDir, "skills"), { recursive: true });
     }
-    const sourceMetadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
-    const metadata = { version: resolveGitRefVersion(ref) ?? sourceMetadata.version };
-    const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
-    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
       const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
@@ -358,6 +390,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     // The payload has no .git, so the server cannot read its commit from git. Stamp the resolved SHA
     // where server/src/build-commit.ts looks for it, as Docker builds do with PAPERCLIP_BUILD_COMMIT.
     fs.writeFileSync(path.join(stagedPayload, "node_modules", "@paperclipai", "server", ".paperclip-build-commit"), `${sha}\n`);
+    await verifyGitPayload(stagedPayload, metadata.version, runCommand);
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };

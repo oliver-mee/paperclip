@@ -13,6 +13,7 @@ import {
   resolveNpmInstallRequest,
   runCommandWithDiagnostics,
   unifyGitInstallWorkspaceVersions,
+  verifyGitPayload,
 } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
@@ -103,7 +104,7 @@ describe("managed install commands", () => {
     fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n");
     const runCommand = vi.fn(async (_file: string, _args: string[]) => ({ stdout: "0.3.1\n", stderr: "" }));
     await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, paths)).resolves.toEqual({ payloadPath, reused: true, version: "0.3.1" });
-    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand).toHaveBeenCalledTimes(2);
     expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
   });
 
@@ -124,7 +125,7 @@ describe("managed install commands", () => {
         fs.mkdirSync(path.join(checkout, "skills", "paperclip"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "skills", "paperclip", "SKILL.md"), "skill");
         fs.mkdirSync(path.join(checkout, "cli"), { recursive: true });
-        fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
+        fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1", dependencies: { "@paperclipai/server": "workspace:*" } }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
         for (const workspacePackage of packages) {
@@ -141,7 +142,16 @@ describe("managed install commands", () => {
         }
         return { stdout: "", stderr: "" };
       }
-      if (file === "bash") return { stdout: "", stderr: "" };
+      if (file === "bash") {
+        if (args[0] === "scripts/build-npm.sh") {
+          const checkout = String(options?.cwd);
+          const cliPath = path.join(checkout, "cli", "package.json");
+          const cli = JSON.parse(fs.readFileSync(cliPath, "utf8"));
+          cli.dependencies["@paperclipai/server"] = readPackageVersion(path.join(checkout, "server"));
+          fs.writeFileSync(cliPath, JSON.stringify(cli));
+        }
+        return { stdout: "", stderr: "" };
+      }
       if (file === "npm" && args[0] === "pack") {
         let packageName = "paperclipai";
         const stagedPackage = args[1]?.includes("workspace-package-");
@@ -152,6 +162,10 @@ describe("managed install commands", () => {
           if (staged.name === "@paperclipai/server" && !fs.existsSync(path.join(args[1], "skills", "paperclip", "SKILL.md"))) {
             throw new Error("server/skills was not staged before packing");
           }
+        }
+        if (!stagedPackage) {
+          const cli = JSON.parse(fs.readFileSync(path.join(String(options?.cwd), "package.json"), "utf8"));
+          expect(cli.dependencies["@paperclipai/server"]).toBe(packed);
         }
         fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-${packed}.tgz`), "package");
         return { stdout: "", stderr: "" };
@@ -170,9 +184,32 @@ describe("managed install commands", () => {
         fs.cpSync(args[1], args[2], { recursive: true });
         return { stdout: "", stderr: "" };
       }
+      if (file === process.execPath && args[0] === "--experimental-import-meta-resolve") return { stdout: "", stderr: "" };
       if (file === process.execPath) return { stdout: `${readPackageVersion(path.dirname(path.dirname(args[0])))}\n`, stderr: "" };
       throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
     });
+
+  it.each(["valid", "old dependency", "shadow server", "shadow transitive", "wrong version"])("checks the real ESM dependency graph: %s", async (scenario) => {
+    const payload = path.join(root, "payload");
+    const version = "2026.916.1-3";
+    const write = (dir: string, pkg: Record<string, unknown>) => {
+      fs.mkdirSync(path.join(dir, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ type: "module", version, exports: { ".": { import: "./dist/index.js" } }, ...pkg }));
+      // Resolution must never execute server code during installation.
+      fs.writeFileSync(path.join(dir, "dist/index.js"), "throw new Error('server was started');");
+    };
+    write(payload, { dependencies: { "@paperclipai/server": "file:server.tgz", "@paperclipai/shared": "file:shared.tgz" } });
+    const cli = path.join(payload, "node_modules/paperclipai");
+    const server = path.join(payload, "node_modules/@paperclipai/server");
+    write(cli, { dependencies: { "@paperclipai/server": scenario === "old dependency" ? "0.3.1" : version } });
+    write(server, { dependencies: { "@paperclipai/shared": version } });
+    write(path.join(payload, "node_modules/@paperclipai/shared"), { version: scenario === "wrong version" ? "0.3.1" : version });
+    if (scenario === "shadow server") write(path.join(cli, "node_modules/@paperclipai/server"), {});
+    if (scenario === "shadow transitive") write(path.join(server, "node_modules/@paperclipai/shared"), {});
+    const check = verifyGitPayload(payload, version, runCommandWithDiagnostics);
+    if (scenario === "valid") await expect(check).resolves.toBeUndefined();
+    else await expect(check).rejects.toThrow(scenario.startsWith("shadow") ? "outside its staged package" : "mismatch");
+  });
 
   it("reads a release version from version tags only", () => {
     expect(resolveGitRefVersion("v2026.916.1")).toBe("2026.916.1");
