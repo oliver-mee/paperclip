@@ -24,6 +24,63 @@ Not carried, on purpose:
 - [#13923](https://github.com/paperclipai/paperclip/issues/13923), `install --ref` frozen-lockfile abort: only hits `master`. Stable tags have a clean lockfile.
 - [#13861](https://github.com/paperclipai/paperclip/issues/13861), `update` misdetects pnpm global installs: we are on the managed install now.
 
+## 29 September 2026 outage and version-stamping decision
+
+**Verified deployment:** `ome-2026.916.1-4`, commit
+`567339ba4577eb25c477b44c033a5bbf42155fdf`, stable base `v2026.916.1`.
+It started with native systemd readiness at 19:25:54 HKT. Later documentation and
+test-only commits on `ome/deploy` do not change the running payload or require a restart.
+
+### What happened and why stamping was removed
+
+The optional tag-version stamping in `4d76380` changed staged package versions after
+the CLI publish manifest had already recorded a concrete server dependency of `0.3.1`.
+Tag `ome-2026.916.1-2` (`9822c5a`) consequently loaded an old nested registry server
+instead of the fork's top-level server. That caused the different UI, missing routes,
+rejected board API key and missing systemd READY signal. The key was valid; it did not
+need rotating to restore authentication. This regression was introduced by stamping;
+the original fork-install packaging defect and the other functional fixes predated it.
+
+The initial `-3` repair restored matching packages. Oliver then explicitly chose to
+remove unnecessary version rewriting rather than maintain it. `567339ba4` removes
+tag-to-version parsing and the ineffective commit-stamp file. **Do not reintroduce
+stamping just to improve the displayed version.** `0.3.1` and health `commit: null` are
+expected source-build reporting: use `repo`, `ref` and `sha` in
+`~/.paperclip/cli/install.json` for provenance. Git deployment tags remain useful.
+
+Retain the actual ESM dependency-resolution guard for fresh and cached payloads.
+Checking only top-level manifests missed the shadowed server; the guard rejects nested
+copies even if their version strings match. The seven functional patch groups remain;
+the separate MAG-458 row is test isolation, not another runtime feature.
+
+### Evidence and task handoff
+
+Before activating `-4`: 71 installer/update/service tests passed, followed by a clean
+package build, isolated native READY and UI/OpenAPI/document/inbox checks, three non-git
+workspace cases, and a 217 KiB wake spawn proof on both adapter lanes. Live board auth,
+dashboard/documents and the tailnet issue page passed after the idle restart. MAG-457
+subsequently recorded native readiness, no restart loop or reap duplicate-key error,
+and successful seat runs. This does not claim a replay of the real MAG-380 conversation.
+
+| Task | Resolved / remaining boundary |
+| --- | --- |
+| MAG-451 | E2BIG patches and deployment complete; stamping requirement superseded and old `-2` restart request cancelled. Only an explicitly authorised real MAG-380 continuation remains unverified by this repair. Do not port the same patches or request another restart. |
+| MAG-452 | Closed after MAG-457 verification. Missing READY came from the wrong server, not evidence that the unit should be changed to `Type=simple`. Investigate sequence collisions only if they recur on a verified current payload; do not repair DB records from the old log alone. |
+| MAG-454 | Closed: wrong module resolution caused missing routes. Do not add duplicate routes or reorder middleware to fix historical `-2` failures. |
+| MAG-455 | Separate backlog security verification. Existing modern adapter sanitizers dropped a dummy signing-secret value in checks, but that does not prove every fresh agent environment or historical exposure safe. Verify without printing the secret; assess rotation from actual exposure evidence. |
+
+Keep remaining work in backlog until Oliver releases it. Do not reopen completed
+incident tasks merely because the displayed version is `0.3.1`.
+
+Never roll back to `-2`: its payload and rollback entry were removed, with diagnostic
+manifests preserved under `~/.local/state/paperclip-ops/bad-payload-9822-evidence/`.
+Immediate known-good rollback is `-3`; `-1` predates the E2BIG/favicon fixes.
+
+An additional interruption during recovery was caused by two uninstall tests reaching
+the real user service manager. Their tests now inject a fake manager. Run service tests
+with isolated HOME and an inaccessible user bus; preserve the separate MAG-458 HOME
+isolation for OpenCode tests. Do not run destructive CLI tests against the host service.
+
 ## Updating to a new stable release
 
     git fetch upstream --tags
