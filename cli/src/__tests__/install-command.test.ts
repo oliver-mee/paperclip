@@ -6,7 +6,6 @@ import {
   type CommandRunner,
   installCommand,
   installGitPayload,
-  resolveGitRefVersion,
   resolveGitHubRef,
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
@@ -215,36 +214,19 @@ describe("managed install commands", () => {
     else await expect(check).rejects.toThrow(scenario.startsWith("shadow") ? "outside its staged package" : "mismatch");
   });
 
-  it("reads a release version from version tags only", () => {
-    expect(resolveGitRefVersion("v2026.916.1")).toBe("2026.916.1");
-    expect(resolveGitRefVersion("ome-2026.916.1-2")).toBe("2026.916.1-2");
-    expect(resolveGitRefVersion("v2026.921.0-beta.1")).toBe("2026.921.0-beta.1");
-    for (const ref of ["master", "ome/deploy", "feature/test", "abcdef1", "c".repeat(40), undefined]) {
-      expect(resolveGitRefVersion(ref)).toBeNull();
-    }
-  });
-
-  it("stamps the tag version and the resolved commit into a git-ref payload", async () => {
+  it("keeps the source package version for tagged installs and records provenance in the manifest", async () => {
     const sha = "e".repeat(40);
     const runCommand = createGitCheckoutRunCommand(sha);
-    await installCommand({ ref: "ome-2026.916.1-2", repo: "oliver-mee/paperclip", yes: true }, { runCommand });
+    await installCommand({ ref: "ome-2026.916.1-4", repo: "oliver-mee/paperclip", yes: true }, { runCommand });
     const manifest = readInstallManifest(resolveInstallStorePaths());
-    expect(manifest).toMatchObject({ source: "git", ref: "ome-2026.916.1-2", sha, version: "2026.916.1-2" });
+    expect(manifest).toMatchObject({ source: "git", ref: "ome-2026.916.1-4", sha, version: "0.3.1" });
     const serverRoot = path.join(manifest!.payloadPath, "node_modules", "@paperclipai", "server");
-    expect(fs.readFileSync(path.join(serverRoot, ".paperclip-build-commit"), "utf8").trim()).toBe(sha);
+    expect(fs.existsSync(path.join(serverRoot, ".paperclip-build-commit"))).toBe(false);
     const packedNames = runCommand.mock.calls
       .filter(([command, args]) => command === "npm" && args[0] === "install")
       .flatMap(([, args]) => args.filter((arg) => arg.endsWith(".tgz")).map((arg) => path.basename(arg)));
-    expect(packedNames).toContain("paperclipai-2026.916.1-2.tgz");
-    expect(packedNames.every((name) => name.endsWith("-2026.916.1-2.tgz"))).toBe(true);
-  });
-
-  it("keeps the source version for branch installs but still stamps the commit", async () => {
-    const sha = "f".repeat(40);
-    const runCommand = createGitCheckoutRunCommand(sha);
-    const payload = await installGitPayload("oliver-mee/paperclip", sha, runCommand, resolveInstallStorePaths(), "ome/deploy");
-    expect(payload.version).toBe("0.3.1");
-    expect(fs.readFileSync(path.join(payload.payloadPath, "node_modules", "@paperclipai", "server", ".paperclip-build-commit"), "utf8").trim()).toBe(sha);
+    expect(packedNames).toContain("paperclipai-0.3.1.tgz");
+    expect(packedNames.every((name) => name.endsWith("-0.3.1.tgz"))).toBe(true);
   });
 
   it("installs a GitHub branch through codeload and reuses the resolved SHA", async () => {

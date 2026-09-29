@@ -98,14 +98,14 @@ export function resolveGitInstallWorkspacePackages(checkoutPath: string): Releas
 // workspace:* to the dependency's own version. release.sh unifies them with release-package-map.mjs
 // set-version, but that script validates every public package in the repo. Rewrite only the packages
 // this install packs, so an unrelated fork package cannot stop the install.
-export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspacePackages: ReleasePackageEntry[], version: string, options: { preserveWorkspaceRanges?: boolean } = {}): void {
+export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspacePackages: ReleasePackageEntry[], version: string): void {
   const stagedNames = new Set(workspacePackages.map((entry) => entry.name));
   const packageDirs = [...workspacePackages.map((entry) => entry.dir), "cli"];
   for (const packageDir of packageDirs) {
     const packageJsonPath = path.join(checkoutPath, packageDir, "package.json");
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as Record<string, unknown>;
     packageJson.version = version;
-    for (const section of options.preserveWorkspaceRanges ? [] : ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"] as const) {
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"] as const) {
       const dependencies = packageJson[section];
       if (!dependencies || typeof dependencies !== "object") continue;
       for (const [dependencyName, range] of Object.entries(dependencies as Record<string, unknown>)) {
@@ -116,15 +116,6 @@ export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspace
     }
     fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
   }
-}
-
-// A version tag names the release a git install builds, the way release.sh stamps the CalVer before
-// packing: `v2026.916.1`, or a fork's `<name>-<version>` tag such as `ome-2026.916.1-2`. Branches and
-// SHAs name no version, so those installs keep the source package.json placeholder.
-const GIT_REF_VERSION_PATTERN = /^(?:v|[a-z][a-z0-9]*-)?(\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?)$/i;
-
-export function resolveGitRefVersion(ref: string | undefined): string | null {
-  return ref?.trim().match(GIT_REF_VERSION_PATTERN)?.[1] ?? null;
 }
 
 export function assertSupportedNodeVersion(): void {
@@ -317,7 +308,7 @@ function gitBuildEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 // Mirrors the skills copy in scripts/release.sh (Step 2/7).
 const GIT_INSTALL_SKILLS_PACKAGE_DIRS = ["server", "packages/adapters/claude-local", "packages/adapters/codex-local"];
 
-export async function installGitPayload(repo: string, sha: string, runCommand: CommandRunner, paths = resolveInstallStorePaths(), ref?: string): Promise<{ payloadPath: string; reused: boolean; version: string }> {
+export async function installGitPayload(repo: string, sha: string, runCommand: CommandRunner, paths = resolveInstallStorePaths()): Promise<{ payloadPath: string; reused: boolean; version: string }> {
   const identifier = sha.slice(0, 12);
   const payloadPath = payloadPathFor(paths, "git", identifier);
   if (fs.existsSync(payloadPath)) {
@@ -352,12 +343,10 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("tar", ["-xzf", archivePath, "--strip-components=1", "-C", checkoutPath], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["enable", "pnpm", "--install-directory", pnpmShimDir], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
-    // Capture the workspace closure and stamp versions before build-npm materializes the CLI's
-    // publish manifest. Afterwards its server dependency is a concrete version, not workspace:*.
-    const sourceMetadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
-    const metadata = { version: resolveGitRefVersion(ref) ?? sourceMetadata.version };
+    // Capture the workspace closure before build-npm materializes the CLI publish manifest.
+    // Keep the source version; Git refs and SHAs are recorded in the install manifest.
+    const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
-    unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version, { preserveWorkspaceRanges: true });
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     // Stage the non-built publish artifacts the way release.sh does. Bundled packages go through
@@ -389,9 +378,6 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
     }
     await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
-    // The payload has no .git, so the server cannot read its commit from git. Stamp the resolved SHA
-    // where server/src/build-commit.ts looks for it, as Docker builds do with PAPERCLIP_BUILD_COMMIT.
-    fs.writeFileSync(path.join(stagedPayload, "node_modules", "@paperclipai", "server", ".paperclip-build-commit"), `${sha}\n`);
     await verifyGitPayload(stagedPayload, metadata.version, runCommand);
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
@@ -462,7 +448,7 @@ export async function installCommand(
     const installed = await withInstallStoreLock(async () => {
       assertManagedShimWritable(paths);
       const currentManifest = readInstallManifest(paths);
-      const payload = await installGitPayload(gitRequest.repo, sha, runCommand, paths, gitRequest.ref);
+      const payload = await installGitPayload(gitRequest.repo, sha, runCommand, paths);
       const record: InstallRecord = { source: "git", version: payload.version, channel: "pinned", repo: gitRequest.repo, ref: gitRequest.ref, sha, payloadPath: payload.payloadPath, installedAt: (dependencies.now?.() ?? new Date()).toISOString() };
       const nextManifest = buildNextManifest(record, currentManifest);
       const oldTarget = fs.existsSync(paths.currentPath) ? fs.readlinkSync(paths.currentPath) : null;
