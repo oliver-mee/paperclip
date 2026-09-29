@@ -279,7 +279,7 @@ describe("OpenCode local skill injection", () => {
         const runEnv = (options as { env: Record<string, string> }).env;
         const effectiveXdgConfigHome = runEnv.XDG_CONFIG_HOME ?? path.join(home, ".config");
         runTimeSkills.xdgConfigHome = runEnv.XDG_CONFIG_HOME ?? null;
-        runTimeSkills.v1Link = await isSkillLink(path.join(home, ".claude", "skills", "paperclip"));
+        runTimeSkills.v1Link = await isSkillLink(path.join(home, ".config", "opencode", "skills", "paperclip"));
         runTimeSkills.v2Link = await isSkillLink(
           path.join(effectiveXdgConfigHome, "opencode", "skills", "paperclip"),
         );
@@ -332,7 +332,7 @@ describe("OpenCode local skill injection", () => {
 
         expect(result.exitCode).toBe(0);
         // The detected line decides the skill home: v1 → the HOME-based
-        // ~/.claude/skills, v2 → the EFFECTIVE config home the run sees (its own
+        // ~/.config/opencode/skills (fork, MAG-441), v2 → the EFFECTIVE config home the run sees (its own
         // XDG_CONFIG_HOME, i.e. the isolated runtime config home when active),
         // undetectable → both (legacy-safe).
         expect(runTimeSkills.v1Link).toBe(inV1Home);
@@ -346,9 +346,9 @@ describe("OpenCode local skill injection", () => {
             `Injected OpenCode skill "paperclipai/paperclip/paperclip" into ${path.join(effectiveXdgConfigHome, "opencode", "skills")}`,
           );
         } else {
-          // A v1 run never touches a v2 home.
+          // A v1 run never touches the Claude-shared home (fork, MAG-441).
           await expect(
-            fs.lstat(path.join(home, ".config", "opencode", "skills", "paperclip")),
+            fs.lstat(path.join(home, ".claude", "skills", "paperclip")),
           ).rejects.toThrow();
         }
         if (banner) {

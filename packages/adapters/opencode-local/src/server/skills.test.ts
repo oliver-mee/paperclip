@@ -67,12 +67,12 @@ async function expectSymlinkTo(linkPath: string, source: string): Promise<void> 
 describe("resolveOpenCodeSkillsHomes", () => {
   const config = { env: { HOME: "/tmp/paperclip-skills-home" } };
 
-  it("defaults to the legacy Claude skills home", () => {
+  it("defaults to the HOME-based OpenCode skills home, never ~/.claude/skills (fork, MAG-441)", () => {
     expect(resolveOpenCodeSkillsHomes(config)).toEqual([
-      "/tmp/paperclip-skills-home/.claude/skills",
+      "/tmp/paperclip-skills-home/.config/opencode/skills",
     ]);
     expect(resolveOpenCodeSkillsHomes(config, "v1")).toEqual([
-      "/tmp/paperclip-skills-home/.claude/skills",
+      "/tmp/paperclip-skills-home/.config/opencode/skills",
     ]);
   });
 
@@ -84,7 +84,6 @@ describe("resolveOpenCodeSkillsHomes", () => {
 
   it("targets both homes when the version line is unknown", () => {
     expect(resolveOpenCodeSkillsHomes(config, "unknown")).toEqual([
-      "/tmp/paperclip-skills-home/.claude/skills",
       "/tmp/paperclip-skills-home/.config/opencode/skills",
     ]);
   });
@@ -95,7 +94,7 @@ describe("resolveOpenCodeSkillsHomes", () => {
     ]);
     // The v1 home stays HOME-based; only the v2 home follows the config home.
     expect(resolveOpenCodeSkillsHomes(config, "unknown", "/runtime/config-home")).toEqual([
-      "/tmp/paperclip-skills-home/.claude/skills",
+      "/tmp/paperclip-skills-home/.config/opencode/skills",
       "/runtime/config-home/opencode/skills",
     ]);
   });
@@ -104,7 +103,6 @@ describe("resolveOpenCodeSkillsHomes", () => {
 describe("allSkillsHomes", () => {
   it("returns both HOME-based skills homes for management", () => {
     expect(allSkillsHomes({ env: { HOME: "/tmp/paperclip-skills-home" } })).toEqual([
-      "/tmp/paperclip-skills-home/.claude/skills",
       "/tmp/paperclip-skills-home/.config/opencode/skills",
     ]);
   });
@@ -117,7 +115,7 @@ describe("opencode local skills injection", () => {
     const snapshot = await syncOpenCodeSkills(ctx, [KNOWN_SKILL.key]);
 
     expect(snapshot.entries.find((entry) => entry.key === KNOWN_SKILL.key)?.state).toBe("installed");
-    await expectSymlinkTo(path.join(home, ".claude", "skills", KNOWN_SKILL.runtimeName), source);
+    await expect(fs.access(path.join(home, ".claude", "skills"))).rejects.toThrow();
     await expectSymlinkTo(
       path.join(home, ".config", "opencode", "skills", KNOWN_SKILL.runtimeName),
       source,
@@ -164,7 +162,7 @@ describe("opencode local skills injection", () => {
     const snapshot = await syncOpenCodeSkills(ctx, [KNOWN_SKILL.key], "unknown");
 
     expect(snapshot.entries.find((entry) => entry.key === KNOWN_SKILL.key)?.state).toBe("installed");
-    await expectSymlinkTo(path.join(home, ".claude", "skills", KNOWN_SKILL.runtimeName), source);
+    await expect(fs.access(path.join(home, ".claude", "skills"))).rejects.toThrow();
     await expectSymlinkTo(
       path.join(home, ".config", "opencode", "skills", KNOWN_SKILL.runtimeName),
       source,
@@ -196,7 +194,6 @@ describe("opencode local skills injection", () => {
     await syncOpenCodeSkills(ctx, [KNOWN_SKILL.key], "v2");
 
     for (const skillsHome of [
-      path.join(home, ".claude", "skills"),
       path.join(home, ".config", "opencode", "skills"),
     ]) {
       expect(await fs.readdir(skillsHome)).toContain(KNOWN_SKILL.runtimeName);

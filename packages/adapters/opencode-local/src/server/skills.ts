@@ -27,7 +27,10 @@ export type OpenCodeSkillsTargetLine = "v1" | "v2" | "unknown";
 // (~/.config/opencode/skills) and treats ~/.claude/skills as a lower-precedence
 // compat source (r4 delta §4 / M15). Skill IDs are path-derived in v2, so the
 // leaf directory name must stay stable across both homes.
-const OPENCODE_SKILLS_SUBPATH_V1 = [".claude", "skills"] as const;
+// Fork (MAG-441): v1 also reads ~/.config/opencode/skills, so link there instead of the
+// Claude-shared ~/.claude/skills: pruning maintainer-only links there removed skills that
+// interactive Claude sessions and other agents rely on.
+const OPENCODE_SKILLS_SUBPATH_V1 = [".config", "opencode", "skills"] as const;
 const OPENCODE_SKILLS_SUBPATH_V2 = ["opencode", "skills"] as const;
 
 type InstalledSkillTargets = Map<string, InstalledSkillTarget>;
@@ -46,7 +49,7 @@ function resolveOpenCodeHome(config: Record<string, unknown>): string {
 }
 
 // Resolve the skills home(s) a run should inject into for the detected OpenCode
-// version line. Omitted/`v1` keeps the historical single `~/.claude/skills`
+// version line. Omitted/`v1` keeps the single HOME-based `~/.config/opencode/skills` (fork, MAG-441)
 // target; `v2` targets the native global dir; `unknown` targets both so a run
 // works whichever line is installed. The v2 home is resolved against the
 // EFFECTIVE config home the run will see — the isolated `XDG_CONFIG_HOME` from
@@ -68,7 +71,7 @@ export function resolveOpenCodeSkillsHomes(
     case "v2":
       return [v2Home];
     case "unknown":
-      return [v1Home, v2Home];
+      return [...new Set([v1Home, v2Home])];
     case "v1":
       return [v1Home];
     default:
@@ -77,7 +80,7 @@ export function resolveOpenCodeSkillsHomes(
 }
 
 // why: skill management (the registered list/sync entry points) runs without a
-// version line, so it must consider BOTH homes — `~/.claude/skills` and the
+// version line, so it must consider BOTH homes — the HOME-based v1 home and the
 // HOME-based `~/.config/opencode/skills` — or the skills UI installed-state
 // misses whatever the other run line installed. Management has no run env, so
 // the v2 home here is HOME-based (not an isolated runtime config home).
@@ -121,9 +124,9 @@ function describeSkillsTarget(
       };
     case "unknown":
       return {
-        locationLabel: "~/.claude/skills and ~/.config/opencode/skills",
+        locationLabel: "~/.config/opencode/skills",
         warning:
-          "OpenCode version is unknown; skills are linked into both the legacy (~/.claude/skills) and v2 native (~/.config/opencode/skills) skills homes.",
+          "OpenCode version is unknown; skills are linked into the OpenCode global skills home (~/.config/opencode/skills).",
         installedDetail: "Installed in the shared Claude/OpenCode skills home.",
         missingDetail:
           "Configured but not currently linked into either OpenCode skills home.",
@@ -133,8 +136,8 @@ function describeSkillsTarget(
       };
     case "v1":
       return {
-        locationLabel: "~/.claude/skills",
-        warning: "OpenCode v1 uses the shared Claude skills home (~/.claude/skills).",
+        locationLabel: "~/.config/opencode/skills",
+        warning: "OpenCode v1 uses the OpenCode global skills home (~/.config/opencode/skills).",
         installedDetail: "Installed in the shared Claude/OpenCode skills home.",
         missingDetail:
           "Configured but not currently linked into the shared Claude/OpenCode skills home.",
@@ -144,9 +147,9 @@ function describeSkillsTarget(
       };
     default:
       return {
-        locationLabel: "~/.claude/skills",
+        locationLabel: "~/.config/opencode/skills",
         warning:
-          "OpenCode currently uses the shared Claude skills home (~/.claude/skills).",
+          "OpenCode currently uses the OpenCode global skills home (~/.config/opencode/skills).",
         installedDetail: "Installed in the shared Claude/OpenCode skills home.",
         missingDetail:
           "Configured but not currently linked into the shared Claude/OpenCode skills home.",

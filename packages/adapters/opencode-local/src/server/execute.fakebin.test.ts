@@ -488,9 +488,10 @@ describe("opencode-local driven by the fake opencode CLI", () => {
       line: "v1" as const,
       banner: "1.18.32",
       reply: V1_RUN_REPLY,
-      // v1 injects into the HOME-based ~/.claude/skills (persistent).
-      expectedSubpath: [".claude", "skills"] as string[],
-      unexpectedSubpath: [".config", "opencode", "skills"] as string[],
+      // v1 injects into the HOME-based ~/.config/opencode/skills, never the
+      // Claude-shared ~/.claude/skills (fork, MAG-441).
+      expectedSubpath: [".config", "opencode", "skills"] as string[],
+      unexpectedSubpath: [".claude", "skills"] as string[],
     },
     {
       line: "v2" as const,
