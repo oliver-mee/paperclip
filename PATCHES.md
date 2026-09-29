@@ -14,6 +14,9 @@ Base: `v2026.916.1` (`d554c4789`).
 | `fix(claude-local): discover models with a subscription OAuth token` | Subscription auth never sets `ANTHROPIC_API_KEY`, so the model list was always the static fallback. MAG-445. | none yet | local only |
 | `fix(opencode-local): link skills into OpenCode's own skills home` | Pruning in the shared `~/.claude/skills` removed skills that Claude seats rely on. MAG-441. | none yet | local only |
 | `fix(ui): serve a fixed-colour favicon URL per colour scheme` | The SVG favicon is cached in whichever colour scheme loaded first, so it can go invisible after a theme switch. MAG-418. | [#14374](https://github.com/paperclipai/paperclip/pull/14374) (fixes #14371) | open |
+| `Stop duplicating wake context in adapter environments (#13891)` | The ACPX lane (and every built-in adapter) copied the whole wake payload into `PAPERCLIP_WAKE_PAYLOAD_JSON`; a long thread pushed it past Linux's 128 KiB per-string limit and the seat failed `spawn E2BIG` (Leonard on MAG-380). MAG-451. | [#13891](https://github.com/paperclipai/paperclip/pull/13891) | merged upstream after 916.1; drop on the next rebase |
+| `fix: bound launch environments and continuation history against E2BIG` | Guards any other oversized env value and caps the continuation envelope (history, objective, receipts) so long threads stay bounded. Hand-port of four commits onto 916.1. MAG-451. | [#14092](https://github.com/paperclipai/paperclip/pull/14092) | open |
+| `fix(cli): stamp the build commit and tag version on git-ref installs` | A git-ref payload has no `.git`, so `/api/health` said `git: unavailable` and the version read `0.3.1`. MAG-451. | extends [#13928](https://github.com/paperclipai/paperclip/pull/13928) | local only |
 
 Not carried, on purpose:
 
