@@ -6,6 +6,7 @@ import {
   type CommandRunner,
   installCommand,
   installGitPayload,
+  resolveGitRefVersion,
   resolveGitHubRef,
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
@@ -106,6 +107,9 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
   });
 
+  const readPackageVersion = (packageDir: string) =>
+    (JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { version: string }).version;
+
   const createGitCheckoutRunCommand = (sha: string) =>
     vi.fn(async (file: string, args: string[], options?: Parameters<CommandRunner>[2]) => {
       if (file === "curl" && !args.includes("--output")) return { stdout: JSON.stringify({ sha }), stderr: "" };
@@ -132,31 +136,75 @@ describe("managed install commands", () => {
       if (file === "corepack") {
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
-          fs.writeFileSync(path.join(destination, "paperclipai-shared-0.3.1.tgz"), "package");
+          const packed = readPackageVersion(path.join(String(options?.cwd ?? ""), args[args.indexOf("--dir") + 1]));
+          fs.writeFileSync(path.join(destination, `paperclipai-shared-${packed}.tgz`), "package");
         }
         return { stdout: "", stderr: "" };
       }
       if (file === "bash") return { stdout: "", stderr: "" };
       if (file === "npm" && args[0] === "pack") {
         let packageName = "paperclipai";
-        if (args[1]?.includes("workspace-package-")) {
+        const stagedPackage = args[1]?.includes("workspace-package-");
+        const packed = readPackageVersion(stagedPackage ? args[1] : String(options?.cwd ?? ""));
+        if (stagedPackage) {
           const staged = JSON.parse(fs.readFileSync(path.join(args[1], "package.json"), "utf8")) as { name: string };
           packageName = staged.name.replace("@paperclipai/", "paperclipai-");
           if (staged.name === "@paperclipai/server" && !fs.existsSync(path.join(args[1], "skills", "paperclip", "SKILL.md"))) {
             throw new Error("server/skills was not staged before packing");
           }
         }
-        fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
+        fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-${packed}.tgz`), "package");
         return { stdout: "", stderr: "" };
       }
-      if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; const packageRoot = path.join(prefix, "node_modules", "paperclipai"); fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true }); fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" })); fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n"); return { stdout: "", stderr: "" }; }
+      if (file === "npm" && args[0] === "install") {
+        const prefix = args[args.indexOf("--prefix") + 1];
+        const cliTarball = path.basename(args[args.indexOf("--prefix") + 2]);
+        const packageRoot = path.join(prefix, "node_modules", "paperclipai");
+        fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true });
+        fs.mkdirSync(path.join(prefix, "node_modules", "@paperclipai", "server"), { recursive: true });
+        fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: cliTarball.replace(/^paperclipai-(.+)\.tgz$/, "$1") }));
+        fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n");
+        return { stdout: "", stderr: "" };
+      }
       if (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")) {
         fs.cpSync(args[1], args[2], { recursive: true });
         return { stdout: "", stderr: "" };
       }
-      if (file === process.execPath) return { stdout: "0.3.1\n", stderr: "" };
+      if (file === process.execPath) return { stdout: `${readPackageVersion(path.dirname(path.dirname(args[0])))}\n`, stderr: "" };
       throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
     });
+
+  it("reads a release version from version tags only", () => {
+    expect(resolveGitRefVersion("v2026.916.1")).toBe("2026.916.1");
+    expect(resolveGitRefVersion("ome-2026.916.1-2")).toBe("2026.916.1-2");
+    expect(resolveGitRefVersion("v2026.921.0-beta.1")).toBe("2026.921.0-beta.1");
+    for (const ref of ["master", "ome/deploy", "feature/test", "abcdef1", "c".repeat(40), undefined]) {
+      expect(resolveGitRefVersion(ref)).toBeNull();
+    }
+  });
+
+  it("stamps the tag version and the resolved commit into a git-ref payload", async () => {
+    const sha = "e".repeat(40);
+    const runCommand = createGitCheckoutRunCommand(sha);
+    await installCommand({ ref: "ome-2026.916.1-2", repo: "oliver-mee/paperclip", yes: true }, { runCommand });
+    const manifest = readInstallManifest(resolveInstallStorePaths());
+    expect(manifest).toMatchObject({ source: "git", ref: "ome-2026.916.1-2", sha, version: "2026.916.1-2" });
+    const serverRoot = path.join(manifest!.payloadPath, "node_modules", "@paperclipai", "server");
+    expect(fs.readFileSync(path.join(serverRoot, ".paperclip-build-commit"), "utf8").trim()).toBe(sha);
+    const packedNames = runCommand.mock.calls
+      .filter(([command, args]) => command === "npm" && args[0] === "install")
+      .flatMap(([, args]) => args.filter((arg) => arg.endsWith(".tgz")).map((arg) => path.basename(arg)));
+    expect(packedNames).toContain("paperclipai-2026.916.1-2.tgz");
+    expect(packedNames.every((name) => name.endsWith("-2026.916.1-2.tgz"))).toBe(true);
+  });
+
+  it("keeps the source version for branch installs but still stamps the commit", async () => {
+    const sha = "f".repeat(40);
+    const runCommand = createGitCheckoutRunCommand(sha);
+    const payload = await installGitPayload("oliver-mee/paperclip", sha, runCommand, resolveInstallStorePaths(), "ome/deploy");
+    expect(payload.version).toBe("0.3.1");
+    expect(fs.readFileSync(path.join(payload.payloadPath, "node_modules", "@paperclipai", "server", ".paperclip-build-commit"), "utf8").trim()).toBe(sha);
+  });
 
   it("installs a GitHub branch through codeload and reuses the resolved SHA", async () => {
     const sha = "c".repeat(40);

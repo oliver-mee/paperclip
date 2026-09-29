@@ -118,6 +118,15 @@ export function unifyGitInstallWorkspaceVersions(checkoutPath: string, workspace
   }
 }
 
+// A version tag names the release a git install builds, the way release.sh stamps the CalVer before
+// packing: `v2026.916.1`, or a fork's `<name>-<version>` tag such as `ome-2026.916.1-2`. Branches and
+// SHAs name no version, so those installs keep the source package.json placeholder.
+const GIT_REF_VERSION_PATTERN = /^(?:v|[a-z][a-z0-9]*-)?(\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?)$/i;
+
+export function resolveGitRefVersion(ref: string | undefined): string | null {
+  return ref?.trim().match(GIT_REF_VERSION_PATTERN)?.[1] ?? null;
+}
+
 export function assertSupportedNodeVersion(): void {
   if (!isSupportedNodeVersion(process.versions.node)) {
     throw new Error(`Installing or updating Paperclip requires Node.js ${MINIMUM_NODE_VERSION} or newer (found ${process.version} at ${process.execPath}). Put a supported Node bin directory first on PATH and run 'npx paperclipai@latest install --yes' to re-pin an existing managed install.`);
@@ -279,7 +288,7 @@ function gitBuildEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 // Mirrors the skills copy in scripts/release.sh (Step 2/7).
 const GIT_INSTALL_SKILLS_PACKAGE_DIRS = ["server", "packages/adapters/claude-local", "packages/adapters/codex-local"];
 
-export async function installGitPayload(repo: string, sha: string, runCommand: CommandRunner, paths = resolveInstallStorePaths()): Promise<{ payloadPath: string; reused: boolean; version: string }> {
+export async function installGitPayload(repo: string, sha: string, runCommand: CommandRunner, paths = resolveInstallStorePaths(), ref?: string): Promise<{ payloadPath: string; reused: boolean; version: string }> {
   const identifier = sha.slice(0, 12);
   const payloadPath = payloadPathFor(paths, "git", identifier);
   if (fs.existsSync(payloadPath)) {
@@ -322,7 +331,8 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       fs.rmSync(path.join(checkoutPath, packageDir, "skills"), { recursive: true, force: true });
       fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, packageDir, "skills"), { recursive: true });
     }
-    const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
+    const sourceMetadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
+    const metadata = { version: resolveGitRefVersion(ref) ?? sourceMetadata.version };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     unifyGitInstallWorkspaceVersions(checkoutPath, workspacePackages, metadata.version);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
@@ -345,6 +355,9 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
     }
     await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
+    // The payload has no .git, so the server cannot read its commit from git. Stamp the resolved SHA
+    // where server/src/build-commit.ts looks for it, as Docker builds do with PAPERCLIP_BUILD_COMMIT.
+    fs.writeFileSync(path.join(stagedPayload, "node_modules", "@paperclipai", "server", ".paperclip-build-commit"), `${sha}\n`);
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };
@@ -414,7 +427,7 @@ export async function installCommand(
     const installed = await withInstallStoreLock(async () => {
       assertManagedShimWritable(paths);
       const currentManifest = readInstallManifest(paths);
-      const payload = await installGitPayload(gitRequest.repo, sha, runCommand, paths);
+      const payload = await installGitPayload(gitRequest.repo, sha, runCommand, paths, gitRequest.ref);
       const record: InstallRecord = { source: "git", version: payload.version, channel: "pinned", repo: gitRequest.repo, ref: gitRequest.ref, sha, payloadPath: payload.payloadPath, installedAt: (dependencies.now?.() ?? new Date()).toISOString() };
       const nextManifest = buildNextManifest(record, currentManifest);
       const oldTarget = fs.existsSync(paths.currentPath) ? fs.readlinkSync(paths.currentPath) : null;
