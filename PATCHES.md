@@ -13,6 +13,13 @@ Base: `v2026.916.1` (`d554c4789`).
 | `fix(cli): stage git-ref installs the way release.sh stages packages` | Without it `install --ref` cannot build a working payload, so this branch cannot be installed at all. | [#13928](https://github.com/paperclipai/paperclip/pull/13928) | open |
 | `fix(claude-local): discover models with a subscription OAuth token` | Subscription auth never sets `ANTHROPIC_API_KEY`, so the model list was always the static fallback. MAG-445. | none yet | local only |
 | `fix(opencode-local): link skills into OpenCode's own skills home` | Pruning in the shared `~/.claude/skills` removed skills that Claude seats rely on. MAG-441. | none yet | local only |
+| `fix(ui): serve a fixed-colour favicon URL per colour scheme` | The SVG favicon is cached in whichever colour scheme loaded first, so it can go invisible after a theme switch. MAG-418. | [#14374](https://github.com/paperclipai/paperclip/pull/14374) (fixes #14371) | open |
+
+Not carried, on purpose:
+
+- [#13925](https://github.com/paperclipai/paperclip/pull/13925), dashboard summary regression: test-only, so it changes nothing at runtime.
+- [#13923](https://github.com/paperclipai/paperclip/issues/13923), `install --ref` frozen-lockfile abort: only hits `master`. Stable tags have a clean lockfile.
+- [#13861](https://github.com/paperclipai/paperclip/issues/13861), `update` misdetects pnpm global installs: we are on the managed install now.
 
 ## Updating to a new stable release
 
