@@ -8,6 +8,14 @@ import {
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
+import { detectOpenCodeVersion } from "./version.js";
+
+// Discovery probes the CLI version before listing (fork, MAG-469). Stub it so the
+// runChildProcess call counts below only see `opencode models` invocations.
+vi.mock("./version.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./version.js")>()),
+  detectOpenCodeVersion: vi.fn(async () => null),
+}));
 
 describe("openCode models", () => {
   afterEach(() => {
@@ -197,6 +205,30 @@ describe("openCode models", () => {
       { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
     ]);
     expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it("lists models with --standalone on v2 so discovery never spawns the shared service (fork, MAG-469)", async () => {
+    vi.mocked(detectOpenCodeVersion).mockResolvedValueOnce({
+      raw: "opencode v2.0.16",
+      major: 2,
+      minor: 0,
+      patch: 16,
+      line: "v2",
+    } as Awaited<ReturnType<typeof detectOpenCodeVersion>>);
+    const spy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "alibaba/qwen3-max\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    await expect(discoverOpenCodeModels()).resolves.toEqual([
+      { id: "alibaba/qwen3-max", label: "alibaba/qwen3-max" },
+    ]);
+    expect(spy.mock.calls[0][2]).toEqual(["models", "--standalone"]);
   });
 
   it("refreshes a stale non-empty catalog before rejecting the configured model", async () => {

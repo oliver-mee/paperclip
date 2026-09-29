@@ -7,7 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
-import type { OpenCodeVersionLine } from "./version.js";
+import { detectOpenCodeVersion, type OpenCodeVersionLine } from "./version.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -211,6 +211,13 @@ export async function discoverOpenCodeModels(
     }),
   );
 
+  // Fork (MAG-469): on v2 a bare `opencode models` attaches to, or spawns, the one
+  // shared `opencode serve --service` for the user, and a spawned service inherits
+  // this call's env (run keys, a temp XDG_CONFIG_HOME that is later deleted), which
+  // breaks every other opencode client on the box. `--standalone` keeps it private.
+  const detectedVersion = await detectOpenCodeVersion(command, { cwd, env: runtimeEnv });
+  const serverArgs = detectedVersion?.line === "v2" ? ["--standalone"] : [];
+
   const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
   let lastError: Error | undefined;
 
@@ -218,7 +225,7 @@ export async function discoverOpenCodeModels(
     const result = await runChildProcess(
       `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       command,
-      ["models", ...(input.refresh ? ["--refresh"] : [])],
+      ["models", ...serverArgs, ...(input.refresh ? ["--refresh"] : [])],
       {
         cwd,
         env: runtimeEnv,
