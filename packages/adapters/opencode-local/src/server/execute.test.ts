@@ -35,15 +35,20 @@ function probeResult(overrides: Record<string, unknown>) {
 
 describe("OpenCode local skill injection", () => {
   let configHome: string;
+  let isolatedHome: string;
 
   beforeEach(async () => {
     configHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
     vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    // Cases without config.env.HOME inject skills into os.homedir(); keep that off the real home.
+    isolatedHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-home-"));
+    vi.stubEnv("HOME", isolatedHome);
   });
 
   afterEach(async () => {
     vi.unstubAllEnvs();
     await fs.rm(configHome, { recursive: true, force: true });
+    await fs.rm(isolatedHome, { recursive: true, force: true });
   });
 
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {
