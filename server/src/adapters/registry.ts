@@ -120,6 +120,7 @@ import {
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
+import { listHermesModels, refreshHermesModels } from "./hermes-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
   execute as piExecute,
@@ -786,6 +787,8 @@ const hermesGatewayAdapter: ServerAdapterModule = {
 const hermesLocalAdapter: ServerAdapterModule = {
   ...createHermesLocalServerAdapter(),
   runtimeToolDelivery: "environment",
+  listModels: listHermesModels,
+  refreshModels: refreshHermesModels,
 };
 
 const openclawGatewayAdapter: ServerAdapterModule = {
