@@ -90,6 +90,22 @@ the real user service manager. Their tests now inject a fake manager. Run servic
 with isolated HOME and an inaccessible user bus; preserve the separate MAG-458 HOME
 isolation for OpenCode tests. Do not run destructive CLI tests against the host service.
 
+## 30 September 2026: MAG-469 on `ome-2026.916.1-6`, and the hidden env dependency
+
+The MAG-469 argv fix works on `-6`. Summarizer run `0f475dd3` (17:52 HKT) exited 0 with
+`commandArgs` `run --format json --standalone --model alibaba-token-plan/qwen3.8-flash#xhigh`.
+The shared `opencode serve --service` kept its PID (464525) throughout.
+
+The first `-6` runs still failed with `Failed to resolve auth config: SchemaError(Expected
+string at ["ALIBABA_API_KEY"])`. Before `--standalone`, runs attached to the shared service.
+That service was started from a login zsh, so it carried `ALIBABA_TOKEN_PLAN_PERSONAL_API_KEY`
+from `~/.zshenv.secrets`. A standalone run gets the `paperclipai` unit's env, which never had
+the key, so `{env:...}` in `opencode.json` resolved empty. Fixed outside this repo (MAG-471,
+chezmoi `a9c9a73`): `opencode.json` now reads `{file:~/.config/opencode/alibaba-token-plan-personal.key}`.
+That is a 0600 file chezmoi renders from the encrypted secrets file, so it needs no unit env
+change and no restart. Any other `{env:...}` provider key in `opencode.json` (Kimi, MiniMax,
+OpenRouter) has the same gap if a seat ever selects that provider.
+
 ## Updating to a new stable release
 
     git fetch upstream --tags
