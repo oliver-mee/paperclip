@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import {
   discoverOpenCodeModels,
@@ -229,6 +232,76 @@ describe("openCode models", () => {
       { id: "alibaba/qwen3-max", label: "alibaba/qwen3-max" },
     ]);
     expect(spy.mock.calls[0][2]).toEqual(["models", "--standalone"]);
+  });
+
+  describe("v2 --standalone empty-output fallback (fork, MAG-483)", () => {
+    const v2 = {
+      raw: "opencode v2.0.20",
+      major: 2,
+      minor: 0,
+      patch: 20,
+      line: "v2",
+    } as Awaited<ReturnType<typeof detectOpenCodeVersion>>;
+    const ok = (stdout: string) => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+    let stateHome = "";
+
+    afterEach(async () => {
+      if (stateHome) await fs.rm(stateHome, { recursive: true, force: true });
+      stateHome = "";
+    });
+
+    async function writeService(service: Record<string, unknown>) {
+      stateHome = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-state-"));
+      await fs.mkdir(path.join(stateHome, "opencode"), { recursive: true });
+      await fs.writeFile(path.join(stateHome, "opencode", "service.json"), JSON.stringify(service));
+    }
+
+    it("asks the running shared service with --server when --standalone lists nothing", async () => {
+      await writeService({ url: "http://127.0.0.1:49374", pid: process.pid, password: "pw" });
+      vi.mocked(detectOpenCodeVersion).mockResolvedValueOnce(v2);
+      const spy = vi
+        .spyOn(serverUtils, "runChildProcess")
+        .mockResolvedValueOnce(ok(""))
+        .mockResolvedValueOnce(ok("alibaba-token-plan/qwen3.8-flash\nopenai/gpt-5.5\n"));
+
+      await expect(
+        discoverOpenCodeModels({ env: { XDG_STATE_HOME: stateHome }, serviceFallback: true }),
+      ).resolves.toEqual([
+        { id: "alibaba-token-plan/qwen3.8-flash", label: "alibaba-token-plan/qwen3.8-flash" },
+        { id: "openai/gpt-5.5", label: "openai/gpt-5.5" },
+      ]);
+      expect(spy.mock.calls[0][2]).toEqual(["models", "--standalone"]);
+      expect(spy.mock.calls[1][2]).toEqual(["models", "--server", "http://127.0.0.1:49374"]);
+      expect(spy.mock.calls[1][3].env.OPENCODE_SERVER_PASSWORD).toBe("pw");
+    });
+
+    it("returns the empty list without spawning anything when no service is running", async () => {
+      await writeService({ url: "http://127.0.0.1:49374", pid: 2 ** 22 + 12345, password: "pw" });
+      vi.mocked(detectOpenCodeVersion).mockResolvedValueOnce(v2);
+      const spy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValueOnce(ok(""));
+
+      await expect(
+        discoverOpenCodeModels({ env: { XDG_STATE_HOME: stateHome }, serviceFallback: true }),
+      ).resolves.toEqual([]);
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it("never consults the shared service unless the caller opts in (run pre-flight)", async () => {
+      await writeService({ url: "http://127.0.0.1:49374", pid: process.pid });
+      vi.mocked(detectOpenCodeVersion).mockResolvedValueOnce(v2);
+      const spy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValueOnce(ok(""));
+
+      await expect(discoverOpenCodeModels({ env: { XDG_STATE_HOME: stateHome } })).resolves.toEqual([]);
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("refreshes a stale non-empty catalog before rejecting the configured model", async () => {

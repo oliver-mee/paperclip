@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
   asString,
@@ -178,12 +180,66 @@ function isRefreshRejectedByCli(result: {
   );
 }
 
+// Fork (MAG-483): OpenCode 2.0.20's `models --standalone` exits 0 and prints
+// nothing (anomalyco/opencode#41071). When that happens, ask the user's already
+// running shared service instead. `--server <url>` only connects; it never
+// spawns a service, so MAG-469's guarantee holds. With no live service recorded
+// in `$XDG_STATE_HOME/opencode/service.json`, there is nothing to ask.
+async function readRunningOpenCodeService(
+  env: Record<string, string>,
+): Promise<{ url: string; password: string | null } | null> {
+  const home = env.HOME || os.homedir();
+  const stateHome = env.XDG_STATE_HOME?.trim() || path.join(home, ".local", "state");
+  try {
+    const raw = await fs.readFile(path.join(stateHome, "opencode", "service.json"), "utf8");
+    const parsed = JSON.parse(raw) as { url?: unknown; pid?: unknown; password?: unknown };
+    if (typeof parsed.url !== "string" || !/^https?:\/\//.test(parsed.url)) return null;
+    if (typeof parsed.pid !== "number" || !Number.isInteger(parsed.pid) || parsed.pid <= 0) return null;
+    try {
+      process.kill(parsed.pid, 0);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EPERM") return null;
+    }
+    return {
+      url: parsed.url,
+      password: typeof parsed.password === "string" && parsed.password ? parsed.password : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function discoverFromRunningOpenCodeService(
+  command: string,
+  cwd: string,
+  env: Record<string, string>,
+): Promise<AdapterModel[]> {
+  const service = await readRunningOpenCodeService(env);
+  if (!service) return [];
+  const result = await runChildProcess(
+    `opencode-models-server-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    command,
+    ["models", "--server", service.url],
+    {
+      cwd,
+      env: service.password ? { ...env, OPENCODE_SERVER_PASSWORD: service.password } : env,
+      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+      graceSec: 3,
+      onLog: async () => {},
+    },
+  );
+  if (result.timedOut || (result.exitCode ?? 1) !== 0) return [];
+  return sortModels(parseOpenCodeModelsOutput(result.stdout));
+}
+
 export async function discoverOpenCodeModels(
   input: {
     command?: unknown;
     cwd?: unknown;
     env?: unknown;
     refresh?: boolean;
+    /** Server-level listing only; run pre-flight checks never consult the shared service. */
+    serviceFallback?: boolean;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
@@ -256,7 +312,11 @@ export async function discoverOpenCodeModels(
           : "`opencode models` failed.",
       );
     } else {
-      return sortModels(parseOpenCodeModelsOutput(result.stdout));
+      const models = sortModels(parseOpenCodeModelsOutput(result.stdout));
+      if (models.length === 0 && serverArgs.length > 0 && input.serviceFallback && !input.refresh) {
+        return discoverFromRunningOpenCodeService(command, cwd, runtimeEnv);
+      }
+      return models;
     }
 
     const delayMs = MODELS_DISCOVERY_RETRY_DELAYS_MS[attempt - 1];
@@ -272,18 +332,20 @@ export async function discoverOpenCodeModelsCached(
     command?: unknown;
     cwd?: unknown;
     env?: unknown;
+    serviceFallback?: boolean;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const serviceFallback = input.serviceFallback === true;
+  const key = `${discoveryCacheKey(command, cwd, env)}${serviceFallback ? "\nservice-fallback" : ""}`;
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
+  const models = await discoverOpenCodeModels({ command, cwd, env, serviceFallback });
   discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
   return models;
 }
@@ -427,7 +489,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   try {
-    return await discoverOpenCodeModelsCached();
+    return await discoverOpenCodeModelsCached({ serviceFallback: true });
   } catch {
     return [];
   }
