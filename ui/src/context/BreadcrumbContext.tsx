@@ -123,3 +123,27 @@ export function useBreadcrumbs() {
   }
   return ctx;
 }
+
+/**
+ * Fork (MAG-482): swallows breadcrumb/toolbar writes from a page rendered
+ * inside the side panel so it can't retitle the host page or the tab.
+ */
+export function IsolatedBreadcrumbProvider({ children }: { children: ReactNode }) {
+  const noop = useCallback(() => {}, []);
+  return (
+    <BreadcrumbContext.Provider
+      value={{
+        breadcrumbs: [],
+        setBreadcrumbs: noop,
+        breadcrumbToolbar: null,
+        setBreadcrumbToolbar: noop,
+        breadcrumbPanelControl: null,
+        setBreadcrumbPanelControl: noop,
+        mobileToolbar: null,
+        setMobileToolbar: noop,
+      }}
+    >
+      {children}
+    </BreadcrumbContext.Provider>
+  );
+}

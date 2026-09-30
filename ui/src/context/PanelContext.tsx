@@ -105,3 +105,46 @@ export function usePanel() {
   }
   return ctx;
 }
+
+/**
+ * Fork (MAG-482): a sandboxed panel context for a page rendered *inside* the
+ * side panel (Inbox quick triage). The embedded page can open/close its own
+ * properties panel without replacing the host panel's content or writing the
+ * shared visibility preference; nothing renders what it opens here.
+ */
+export function IsolatedPanelProvider({ children }: { children: ReactNode }) {
+  const [panelContent, setPanelContent] = useState<ReactNode | null>(null);
+  const [panelContentMode, setPanelContentMode] = useState<SidePanelContentMode>("padded");
+  const [panelVisible, setPanelVisibleState] = useState(false);
+  const openPanel = useCallback((content: ReactNode, options?: { contentMode?: SidePanelContentMode }) => {
+    setPanelContent(content);
+    setPanelContentMode(options?.contentMode ?? "padded");
+  }, []);
+  const closePanel = useCallback(() => setPanelContent(null), []);
+  const togglePanelVisible = useCallback(() => setPanelVisibleState((prev) => !prev), []);
+  const noop = useCallback(() => {}, []);
+
+  return (
+    <PanelContext.Provider
+      value={{
+        panelContent,
+        panelContentMode,
+        panelVisible,
+        openPanel,
+        closePanel,
+        setPanelVisible: setPanelVisibleState,
+        togglePanelVisible,
+        panelMaximizeRequested: false,
+        requestPanelMaximize: noop,
+        clearPanelMaximizeRequest: noop,
+      }}
+    >
+      {children}
+    </PanelContext.Provider>
+  );
+}
+
+/** Fork (MAG-482): null outside a PanelProvider, for features that are optional without a panel host. */
+export function useOptionalPanel() {
+  return useContext(PanelContext);
+}

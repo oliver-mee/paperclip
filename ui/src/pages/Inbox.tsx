@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
+import { useInboxQuickTriage } from "@/features/inbox-quick-triage/useInboxQuickTriage";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
@@ -240,7 +241,7 @@ function inboxCollectionPreferenceLocation(
   };
 }
 
-function loadInboxCollectionPreferences(companyId: string | null | undefined) {
+export function loadInboxCollectionPreferences(companyId: string | null | undefined) {
   return loadTaskCollectionPreferences({
     ...inboxCollectionPreferenceLocation(companyId),
     defaultViewState: DEFAULT_INBOX_FILTER_PREFERENCES,
@@ -2128,6 +2129,24 @@ function StreamlinedInbox() {
     navigate,
   };
 
+  // Fork (MAG-482): plain click on an issue row opens it in the side panel.
+  const quickTriageIssues = useMemo(
+    () => flatNavItems.flatMap((entry) =>
+      entry.type === "child" ? [entry.issue]
+        : entry.type === "top" && entry.item.kind === "issue" ? [entry.item.issue]
+          : []),
+    [flatNavItems],
+  );
+  const { previewIssueId: quickTriageIssueId, onListClickCapture: onQuickTriageClickCapture } = useInboxQuickTriage({
+    enabled: !isMobile,
+    orderedIssues: quickTriageIssues,
+    canArchive: canArchiveFromTab,
+    archiveIssue: (id) => archiveIssueMutation.mutate(id),
+    isArchiving: (id) => archivingIssueIds.has(id),
+    linkStateFor: (issue) => withIssueDetailHeaderSeed(issueLinkState, issue),
+    keyboardShortcutsEnabled,
+  });
+
   // Keyboard shortcuts (mail-client style) — single stable listener using refs
   useEffect(() => {
     if (!keyboardShortcutsEnabled) return;
@@ -2741,6 +2760,7 @@ function StreamlinedInbox() {
               className="-mx-2 overflow-hidden sm:mx-0"
               onPointerDownCapture={noteInboxSortInteraction}
               onWheelCapture={noteInboxSortInteraction}
+              onClickCapture={onQuickTriageClickCapture}
             >
               {(() => {
                 const renderInboxIssue = ({
@@ -2797,7 +2817,7 @@ function StreamlinedInbox() {
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
                       chevronInGuide={streamlinedUiEnabled && depth > 0 && hasChildren}
-                      selected={selected}
+                      selected={selected || quickTriageIssueId === issue.id}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
