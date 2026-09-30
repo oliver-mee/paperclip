@@ -283,6 +283,24 @@ describe("openCode models", () => {
       expect(spy.mock.calls[1][3].env.OPENCODE_SERVER_PASSWORD).toBe("pw");
     });
 
+    it("asks again when the service's first answer from a new cwd is empty", async () => {
+      await writeService({ url: "http://127.0.0.1:49374", pid: process.pid, password: "pw" });
+      vi.mocked(detectOpenCodeVersion).mockResolvedValueOnce(v2);
+      const spy = vi
+        .spyOn(serverUtils, "runChildProcess")
+        .mockResolvedValueOnce(ok(""))
+        .mockResolvedValueOnce(ok(""))
+        .mockResolvedValueOnce(ok("alibaba-token-plan/qwen3.8-flash\n"));
+
+      await expect(
+        discoverOpenCodeModels({ env: { XDG_STATE_HOME: stateHome }, serviceFallback: true }),
+      ).resolves.toEqual([
+        { id: "alibaba-token-plan/qwen3.8-flash", label: "alibaba-token-plan/qwen3.8-flash" },
+      ]);
+      expect(spy).toHaveBeenCalledTimes(3);
+      expect(spy.mock.calls[2][2]).toEqual(["models", "--server", "http://127.0.0.1:49374"]);
+    });
+
     it("returns the empty list without spawning anything when no service is running", async () => {
       await writeService({ url: "http://127.0.0.1:49374", pid: 2 ** 22 + 12345, password: "pw" });
       vi.mocked(detectOpenCodeVersion).mockResolvedValueOnce(v2);

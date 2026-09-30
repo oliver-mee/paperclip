@@ -18,6 +18,8 @@ const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
 // same host and either time out or fail with an opaque error. Retry a few
 // times with backoff before surfacing a hard failure (SAG-6326/SAG-6336).
 const MODELS_DISCOVERY_RETRY_DELAYS_MS = [2_000, 4_000];
+// Fork (MAG-483): see discoverFromRunningOpenCodeService.
+const SERVICE_FALLBACK_RETRY_DELAYS_MS = [500, 2_000];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -216,20 +218,27 @@ async function discoverFromRunningOpenCodeService(
 ): Promise<AdapterModel[]> {
   const service = await readRunningOpenCodeService(env);
   if (!service) return [];
-  const result = await runChildProcess(
-    `opencode-models-server-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
-    ["models", "--server", service.url],
-    {
-      cwd,
-      env: service.password ? { ...env, OPENCODE_SERVER_PASSWORD: service.password } : env,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
-      graceSec: 3,
-      onLog: async () => {},
-    },
-  );
-  if (result.timedOut || (result.exitCode ?? 1) !== 0) return [];
-  return sortModels(parseOpenCodeModelsOutput(result.stdout));
+  // The service boots a per-directory location on the first request from a cwd
+  // and answers that request with zero models (exit 0); the next one is full.
+  for (const delayMs of [0, ...SERVICE_FALLBACK_RETRY_DELAYS_MS]) {
+    if (delayMs > 0) await sleep(delayMs);
+    const result = await runChildProcess(
+      `opencode-models-server-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["models", "--server", service.url],
+      {
+        cwd,
+        env: service.password ? { ...env, OPENCODE_SERVER_PASSWORD: service.password } : env,
+        timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
+    if (result.timedOut || (result.exitCode ?? 1) !== 0) return [];
+    const models = sortModels(parseOpenCodeModelsOutput(result.stdout));
+    if (models.length > 0) return models;
+  }
+  return [];
 }
 
 export async function discoverOpenCodeModels(
