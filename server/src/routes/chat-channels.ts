@@ -3,7 +3,14 @@ import {
   type Request as ExpressRequest,
   type Response as ExpressResponse,
 } from "express";
-import type { Db } from "@paperclipai/db";
+import {
+  chatConversations,
+  chatPublications,
+  issueComments,
+  issues,
+  type Db,
+} from "@paperclipai/db";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   CHAT_PROVIDERS,
   configureChatEndpointSchema,
@@ -12,6 +19,7 @@ import {
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
   isUuidLike,
+  publishChatCommentSchema,
   publishChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   resolveChatActionSchema,
@@ -39,8 +47,10 @@ import {
 } from "./authz.js";
 import {
   badRequest,
+  conflict,
   forbidden,
   HttpError,
+  notFound,
   tooManyRequests,
 } from "../errors.js";
 
@@ -80,6 +90,93 @@ async function assertEndpointAccess(
     "Chat endpoint not found",
   );
   return endpoint !== null;
+}
+
+// Fork only (MAG-498). Agents listed here may start a chat message by
+// publishing a comment they authored on a bound task they are assigned to.
+// Every other publication path stays board-only. Empty means upstream
+// behaviour: agent keys are refused.
+export const CHAT_AGENT_PUBLISHERS_ENV = "PAPERCLIP_FORK_CHAT_AGENT_PUBLISHERS";
+
+function chatAgentPublishers(): Set<string> {
+  return new Set(
+    (process.env[CHAT_AGENT_PUBLISHERS_ENV] ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+}
+
+// Returns an existing publication of the comment on this conversation, so a
+// comment already sent (by the inbound-run path or an earlier call) is never
+// sent twice. Throws unless every agent condition holds.
+async function assertAgentCommentPublishAccess(
+  db: Db,
+  req: ExpressRequest,
+  endpointId: string,
+  conversationId: string,
+  commentId: string,
+) {
+  const agentId = req.actor.agentId;
+  if (!agentId || !chatAgentPublishers().has(agentId)) {
+    throw forbidden("Board access required");
+  }
+  if (![endpointId, conversationId, commentId].every(isUuidLike)) {
+    throw badRequest("Valid endpoint, conversation, and comment IDs are required");
+  }
+  const row = await db
+    .select({
+      companyId: chatConversations.companyId,
+      endpointId: chatConversations.endpointId,
+      state: chatConversations.state,
+      assigneeAgentId: issues.assigneeAgentId,
+      issueId: issues.id,
+    })
+    .from(chatConversations)
+    .innerJoin(issues, eq(issues.id, chatConversations.issueId))
+    .where(
+      and(
+        eq(chatConversations.id, conversationId),
+        eq(chatConversations.endpointId, endpointId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (!row) throw notFound("Conversation not found");
+  assertCompanyAccess(req, row.companyId);
+  if (row.assigneeAgentId !== agentId) {
+    throw forbidden("Only the task's assignee can publish to its conversation");
+  }
+  if (row.state !== "active" && row.state !== "waiting") {
+    throw conflict(
+      "Conversation is no longer active, so a reply would not reach this task",
+    );
+  }
+  const comment = await db
+    .select({ authorAgentId: issueComments.authorAgentId })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.id, commentId),
+        eq(issueComments.issueId, row.issueId),
+        isNull(issueComments.deletedAt),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (!comment) throw notFound("Task comment not found");
+  if (comment.authorAgentId !== agentId) {
+    throw forbidden("Agents can publish only their own comments");
+  }
+  return db
+    .select()
+    .from(chatPublications)
+    .where(
+      and(
+        eq(chatPublications.conversationId, conversationId),
+        eq(chatPublications.commentId, commentId),
+      ),
+    )
+    .orderBy(desc(chatPublications.createdAt))
+    .then((rows) => rows[0] ?? null);
 }
 
 export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
@@ -344,6 +441,29 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId/conversations/:conversationId/publications",
     validate(publishChatPublicationSchema),
     async (req, res) => {
+      if (req.actor.type === "agent" && "commentId" in req.body) {
+        const existing = await assertAgentCommentPublishAccess(
+          db,
+          req,
+          endpointId(req),
+          req.params.conversationId as string,
+          req.body.commentId,
+        );
+        if (existing) {
+          res.status(200).json(existing);
+          return;
+        }
+        res
+          .status(201)
+          .json(
+            await service.publishComment(
+              endpointId(req),
+              req.params.conversationId as string,
+              req.body.commentId,
+            ),
+          );
+        return;
+      }
       if (!(await assertEndpointAccess(req, res, service))) return;
       if ("commentId" in req.body) {
         res
@@ -396,6 +516,65 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
           req.params.publicationId as string,
         ),
       );
+    },
+  );
+
+  // Fork only (MAG-498). Agents cannot see conversation IDs, and a Telegram DM
+  // gets a new conversation each session, so the allow-listed assignee names
+  // the task instead and its comment goes to the task's live conversations.
+  router.post(
+    "/issues/:issueId/chat-publications",
+    validate(publishChatCommentSchema),
+    async (req, res) => {
+      if (req.actor.type !== "agent" || !req.actor.companyId) {
+        throw forbidden("Agent access required");
+      }
+      const issueRef = req.params.issueId as string;
+      const conversations = await db
+        .select({
+          id: chatConversations.id,
+          endpointId: chatConversations.endpointId,
+        })
+        .from(chatConversations)
+        .innerJoin(issues, eq(issues.id, chatConversations.issueId))
+        .where(
+          and(
+            eq(issues.companyId, req.actor.companyId),
+            isUuidLike(issueRef)
+              ? eq(issues.id, issueRef)
+              : eq(issues.identifier, issueRef.toUpperCase()),
+            inArray(chatConversations.state, ["active", "waiting"]),
+          ),
+        )
+        .orderBy(desc(chatConversations.sessionGeneration));
+      const latestPerEndpoint = conversations.filter(
+        (conversation, index) =>
+          conversations.findIndex(
+            (other) => other.endpointId === conversation.endpointId,
+          ) === index,
+      );
+      if (!latestPerEndpoint.length) {
+        throw conflict("Task has no active chat conversation");
+      }
+      const publications = [];
+      for (const conversation of latestPerEndpoint) {
+        const existing = await assertAgentCommentPublishAccess(
+          db,
+          req,
+          conversation.endpointId,
+          conversation.id,
+          req.body.commentId,
+        );
+        publications.push(
+          existing ??
+            (await service.publishComment(
+              conversation.endpointId,
+              conversation.id,
+              req.body.commentId,
+            )),
+        );
+      }
+      res.status(201).json({ publications });
     },
   );
 
