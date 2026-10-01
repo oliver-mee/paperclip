@@ -7,7 +7,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { IsolatedBreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { IsolatedPanelProvider } from "@/context/PanelContext";
+import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
+import { cn } from "@/lib/utils";
 import { IssueDetail } from "@/pages/IssueDetail";
 
 export interface InboxIssuePanelViewProps {
@@ -85,6 +87,7 @@ export function InboxIssuePanelHeader({
 export function InboxIssuePanelView(props: InboxIssuePanelViewProps): ReactNode {
   const { companyPrefix, issuePathId, linkState } = props;
   const headerSlot = usePaneHeaderSlot();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const location = useMemo(
     () => ({
       pathname: `/${companyPrefix}${createIssueDetailPath(issuePathId)}`,
@@ -101,7 +104,15 @@ export function InboxIssuePanelView(props: InboxIssuePanelViewProps): ReactNode 
       {headerSlot ? createPortal(<InboxIssuePanelHeader {...props} />, headerSlot) : null}
       <IsolatedPanelProvider>
         <IsolatedBreadcrumbProvider>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {/* The page expects Layout's <main> gutters (it bleeds into them on the
+          legacy shell), so mirror them here or the thread touches the panel edges. */}
+          <div
+            data-testid="inbox-issue-panel-body"
+            className={cn(
+              "flex min-h-0 flex-1 flex-col overflow-y-auto p-4 md:p-6",
+              streamlinedUiEnabled && "pt-0 md:pt-0",
+            )}
+          >
             <Routes location={location}>
               <Route path="issues/:issueId" element={<IssueDetail key={issuePathId} />} />
             </Routes>

@@ -57,4 +57,25 @@ describe("CollectionToolbar", () => {
     expect(container.querySelector('[data-slot="collection-toolbar-actions"]')).toBeNull();
     expect(container.querySelector('[data-slot="collection-toolbar-feedback"]')).toBeNull();
   });
+  it("wraps controls to their own line rather than squeezing the search (MAG-482)", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    flushSync(() =>
+      root?.render(
+        <CollectionToolbar
+          context={<span>Mine</span>}
+          search={<input aria-label="Search" />}
+          controls={<button type="button">Filter</button>}
+        />,
+      ),
+    );
+
+    const search = container.querySelector('[data-slot="collection-toolbar-search"]');
+    const controls = container.querySelector('[data-slot="collection-toolbar-controls"]');
+    expect(search?.parentElement?.className).toContain("sm:flex-wrap");
+    expect(search?.className).toContain("sm:basis-(--sz-220px)");
+    expect(controls?.className).toContain("sm:flex-nowrap");
+    expect(controls?.parentElement?.className).toContain("sm:shrink-0");
+  });
 });

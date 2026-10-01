@@ -22,6 +22,10 @@ export interface CollectionToolbarProps {
  * State, queries, and control behavior stay with the consuming surface. Keeping
  * this component slot-based lets Inbox, Tasks, routine runs, and scoped task
  * lists share geometry without coupling their data models.
+ *
+ * Fork (MAG-482): on a narrow column (e.g. Inbox beside the docked issue panel)
+ * the row wraps the controls onto their own line instead of squeezing the
+ * search below its width and stacking the buttons over it.
  */
 export function CollectionToolbar({
   context,
@@ -39,21 +43,21 @@ export function CollectionToolbar({
       role="toolbar"
       aria-label={ariaLabel}
     >
-      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         {context ? (
           <div data-slot="collection-toolbar-context" className="min-w-0 shrink-0">
             {context}
           </div>
         ) : null}
         {search ? (
-          <div data-slot="collection-toolbar-search" className="min-w-0 flex-1">
+          <div data-slot="collection-toolbar-search" className="min-w-0 flex-1 sm:basis-(--sz-220px)">
             {search}
           </div>
         ) : null}
         {(controls || actions) ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-1 sm:ml-auto sm:flex-nowrap">
+          <div className="flex min-w-0 flex-wrap items-center gap-1 sm:ml-auto sm:shrink-0 sm:flex-nowrap">
             {controls ? (
-              <div data-slot="collection-toolbar-controls" className="flex min-w-0 flex-wrap items-center gap-1">
+              <div data-slot="collection-toolbar-controls" className="flex min-w-0 flex-wrap items-center gap-1 sm:flex-nowrap">
                 {controls}
               </div>
             ) : null}
